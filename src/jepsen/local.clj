@@ -19,7 +19,11 @@
   each containing either `nil` if the node is not running, or a map like:
 
       {:node \"l1\", :process ...}
-  "
+
+  For convenience, local nodes are assigned sequential ports from
+  `starting-port`, based on their index in (:nodes test). When started, this
+  port is available to the process in `JEPSEN_PORT`. You can use this to (e.g.)
+  open HTTP connections to each local node."
   (:refer-clojure :exclude [test])
   (:require [clojure [pprint :refer [pprint]]
                      [string :as str]]
@@ -38,6 +42,18 @@
                     OutputStreamWriter
                     Writer)
            (java.util.concurrent TimeUnit)))
+
+(def starting-port
+  "Where we start assigning port numbers."
+  47000)
+
+(defn port
+  "Takes a test map and a local node; returns the local port assigned to that
+  node."
+  [test node]
+  (let [index (.indexOf ^java.util.List (:nodes test) node)]
+    (assert (not (neg? index)))
+    (+ starting-port index)))
 
 ;; Process management
 
@@ -62,12 +78,13 @@
         ; Binary
         bin         (.getCanonicalPath (io/file bin))
         ; Launch process
-        process (-> (ProcessBuilder. ^java.util.List (cons bin (:args opts)))
+        builder (-> (ProcessBuilder. ^java.util.List (cons bin (:args opts)))
                     (.directory (io/file (:dir opts)))
                     (.redirectOutput stdout-file)
-                    (.redirectError  stderr-file)
-                    (.redirectInput  ProcessBuilder$Redirect/DISCARD)
-                    (.start))]
+                    (.redirectError  stderr-file))
+        _ (doto (.environment builder)
+            (.put "JEPSEN_PORT" (str (port test node))))
+        process (.start builder)]
     {:node    node
      :process process}))
 
@@ -91,14 +108,16 @@
   db/Kill
   (kill! [this test node]
     (let [state (get (:local test) node)]
+      (assert state (str "Expected (:local test) to contain " node))
       (locking state
-        (if-let [state @state]
-          (do (kill-process! state)
+        (if-let [s @state]
+          (do (kill-process! s)
               (reset! state nil))
           :not-running))))
 
   (start! [this test node]
     (let [state (get (:local test) node)]
+      (assert state (str "Expected (:local test) to contain " node))
       (locking state
         (if @state
           :already-running
@@ -109,10 +128,10 @@
 
   db/DB
   (setup! [this test node]
-    (start! this test node))
+    (db/start! this test node))
 
   (teardown! [this test node]
-    (kill! this test node)))
+    (db/kill! this test node)))
 
 (defn db
   "Creates a Jepsen DB which manages a local node's process. Supports
@@ -128,5 +147,6 @@
   local nodes. Each node in the test gains a corresponding entry in (:local
   test)."
   [test]
-  (assoc test :local
-         (zipmap (:nodes test) (repeatedly (partial atom nil)))))
+  (-> test
+      (assoc :local (zipmap (:nodes test) (repeatedly (partial atom nil))))
+      (update :nonserializable-keys conj :local)))

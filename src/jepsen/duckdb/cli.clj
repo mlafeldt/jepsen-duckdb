@@ -2,21 +2,21 @@
   "Command-line entry point for DuckDB tests."
   (:gen-class)
   (:require [clojure [string :as str]]
+            [clojure.java.io :as io]
             [clojure.tools.logging :refer [info warn]]
             [jepsen [checker :as checker]
                     [cli :as cli]
                     [control :as c]
-                    [db :as jepsen.db]
                     [generator :as gen]
+                    [local :as local]
                     [nemesis :as nemesis]
                     [os :as os]
                     [tests :as tests]
-                    [util :as util]]
+                    [util :as util :refer [sh]]]
             [jepsen.checker.timeline :as timeline]
             [jepsen.nemesis.combined :as nc]
             ;[jepsen.duckdb [append :as append]]
-            [jepsen.duckdb.db :as db]))
-
+            ))
 
 (def workloads
   "A map of workload names to functions that take CLI options and return
@@ -58,12 +58,42 @@
    :read-committed      "RC"
    :read-uncommitted    "RU"})
 
-(defn duckdb-test
-  "Given options from the CLI, constructs a test map."
+(def local-dir
+  "Where does the local node project live?"
+  "local-node")
+
+(defonce local-built?
+  (atom false))
+
+(defn build-local!
+  "Builds the local DB node program."
+  []
+  (locking local-built?
+    (when-not @local-built?
+      (info "Building local node...")
+      (sh "lein" "uberjar", :dir local-dir)
+      (sh "/bin/bash" "-c" "mv target/*-standalone.jar local-node.jar"
+          :dir local-dir)
+      (reset! local-built? true))))
+
+(defn db
+  "Constructs a local DB given CLI opts."
   [opts]
-  (let [workload-name (:workload opts :append)
+  (let [; Base arguments
+        args ["-jar" (.getCanonicalPath (io/file local-dir "local-node.jar"))]]
+    (local/db {:bin "/usr/bin/java"
+               :node-args (zipmap (:nodes opts)
+                                  (cons (into args ["primary"])
+                                        (repeat args)))})))
+
+(defn duckdb-test
+  "Given options from the CLI, constructs a test map. As a side effect, builds
+  the local node first, once per JVM run."
+  [opts]
+  (build-local!)
+  (let [workload-name (:workload opts :none)
         workload ((workloads workload-name) opts)
-        db       (db/db)
+        db       (db opts)
         nemesis  nil
         ;nemesis (nc/nemesis-package
         ;    {:db db
@@ -76,29 +106,28 @@
         gen (->> (:generator workload)
                  (gen/stagger (/ (:rate opts)))
                  (gen/nemesis (:generator nemesis))
-                 (gen/time-limit (:time-limit opts) gen))]
+                 (gen/time-limit (:time-limit opts)))]
     (-> tests/noop-test
         (merge
           opts
-          {:name (str (name (:db opts))
-                      " " (name workload-name)
+          {:name (str (name workload-name)
                       " " (short-isolation (:isolation opts)) "("
                       (short-isolation (:expected-consistency-model opts)) ") "
                       (str/join "," (map name (:nemesis opts))))
-           :ssh {:dummy? true}
-           :os  os/noop
-           :db  db
+           :ssh     {:dummy? true}
+           :os      os/noop
+           :db      db
            :checker (checker/compose
-                      {:perf (checker/perf
-                               {:nemeses (:perf nemesis)})
-                       :clock (checker/clock-plot)
-                       :stats (stats-checker)
+                      {:perf       (checker/perf {:nemeses (:perf nemesis)})
+                       :clock      (checker/clock-plot)
+                       :stats      (checker/stats)
                        :exceptions (checker/unhandled-exceptions)
-                       :timeline (timeline/html)
-                       :workload (:checker workload)})
-           :client    (a/client (:client workload))
+                       ;:timeline   (timeline/html)
+                       :workload   (:checker workload)})
+           :client    (:client workload)
            :nemesis   (:nemesis nemesis nemesis/noop)
-           :generator gen}))))
+           :generator gen})
+        local/test)))
 
 (def cli-opts
   "Command line options"
