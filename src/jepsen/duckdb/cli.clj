@@ -1,0 +1,180 @@
+(ns jepsen.duckdb.cli
+  "Command-line entry point for DuckDB tests."
+  (:gen-class)
+  (:require [clojure [string :as str]]
+            [clojure.tools.logging :refer [info warn]]
+            [jepsen [checker :as checker]
+                    [cli :as cli]
+                    [control :as c]
+                    [db :as jepsen.db]
+                    [generator :as gen]
+                    [nemesis :as nemesis]
+                    [os :as os]
+                    [tests :as tests]
+                    [util :as util]]
+            [jepsen.checker.timeline :as timeline]
+            [jepsen.nemesis.combined :as nc]
+            ;[jepsen.duckdb [append :as append]]
+            [jepsen.duckdb.db :as db]))
+
+
+(def workloads
+  "A map of workload names to functions that take CLI options and return
+  workload maps."
+  {;:append append/workload
+   :none   (fn [_] tests/noop-test)})
+
+(def all-workloads
+  "A collection of workloads we run by default."
+  [;:append
+   ])
+
+(def all-nemeses
+  "Combinations of nemeses for tests"
+  [[]
+   ;[:pause]
+   ])
+
+(def special-nemeses
+  "A map of special nemesis names to collections of faults"
+  {:none []
+   ;:all [:pause :kill :partition :clock]})
+   :all  []})
+
+(defn parse-nemesis-spec
+  "Takes a comma-separated nemesis string and returns a collection of keyword
+  faults."
+  [spec]
+  (->> (str/split spec #",")
+       (map keyword)
+       (mapcat #(get special-nemeses % [%]))))
+
+(def short-isolation
+  {:strict-serializable "Strict-1SR"
+   :serializable        "S"
+   :strong-snapshot-isolation "Strong-SI"
+   :snapshot-isolation  "SI"
+   :repeatable-read     "RR"
+   :read-committed      "RC"
+   :read-uncommitted    "RU"})
+
+(defn duckdb-test
+  "Given options from the CLI, constructs a test map."
+  [opts]
+  (let [workload-name (:workload opts :append)
+        workload ((workloads workload-name) opts)
+        db       (db/db)
+        nemesis  nil
+        ;nemesis (nc/nemesis-package
+        ;    {:db db
+        ;     :nodes (:nodes opts)
+        ;     :faults (:nemesis opts)
+        ;     :partition {:targets [:one :majority :majorities-ring]}
+        ;     :pause {:targets [:one :majority :all]}
+        ;     :kill  {:targets [:one :majority :all]}
+        ;     :interval (:nemesis-interval opts)})
+        gen (->> (:generator workload)
+                 (gen/stagger (/ (:rate opts)))
+                 (gen/nemesis (:generator nemesis))
+                 (gen/time-limit (:time-limit opts) gen))]
+    (-> tests/noop-test
+        (merge
+          opts
+          {:name (str (name (:db opts))
+                      " " (name workload-name)
+                      " " (short-isolation (:isolation opts)) "("
+                      (short-isolation (:expected-consistency-model opts)) ") "
+                      (str/join "," (map name (:nemesis opts))))
+           :ssh {:dummy? true}
+           :os  os/noop
+           :db  db
+           :checker (checker/compose
+                      {:perf (checker/perf
+                               {:nemeses (:perf nemesis)})
+                       :clock (checker/clock-plot)
+                       :stats (stats-checker)
+                       :exceptions (checker/unhandled-exceptions)
+                       :timeline (timeline/html)
+                       :workload (:checker workload)})
+           :client    (a/client (:client workload))
+           :nemesis   (:nemesis nemesis nemesis/noop)
+           :generator gen}))))
+
+(def cli-opts
+  "Command line options"
+  [["-i" "--isolation LEVEL" "What level of isolation we should set: serializable, repeatable-read, etc."
+    :default :serializable
+    :parse-fn keyword
+    :validate [#{:read-uncommitted
+                 :read-committed
+                 :repeatable-read
+                 :serializable}
+               "Should be one of read-uncommitted, read-committed, repeatable-read, or serializable"]]
+
+   [nil "--expected-consistency-model MODEL" "What level of isolation do we *expect* to observe? Defaults to the same as --isolation."
+    :default nil
+    :parse-fn keyword]
+
+   [nil "--key-count NUM" "Number of keys in active rotation."
+    :default  10
+    :parse-fn parse-long
+    :validate [pos? "Must be a positive integer"]]
+
+   [nil "--nemesis FAULTS" "A comma-separated list of nemesis faults to enable"
+    :parse-fn parse-nemesis-spec
+    :validate [(partial every? #{:pause :kill})
+               "Faults must be pause, kill, or the special faults all or none."]]
+
+   [nil "--max-txn-length NUM" "Maximum number of operations in a transaction."
+    :default  4
+    :parse-fn parse-long
+    :validate [pos? "Must be a positive integer"]]
+
+   [nil "--max-writes-per-key NUM" "Maximum number of writes to any given key."
+    :default  256
+    :parse-fn parse-long
+    :validate [pos? "Must be a positive integer."]]
+
+   [nil "--nemesis-interval SECS" "Roughly how long between nemesis operations."
+    :default  20
+    :parse-fn read-string
+    :validate [pos? "Must be a positive number."]]
+
+   ["-r" "--rate HZ" "Approximate request rate, in hz"
+    :default  1000
+    :parse-fn read-string
+    :validate [pos? "Must be a positive number."]]
+
+   ["-w" "--workload NAME" "What workload should we run?"
+    :parse-fn keyword
+    :validate [workloads (cli/one-of workloads)]]
+   ])
+
+(defn all-tests
+  "Turns CLI options into a sequence of tests."
+  [opts]
+  (let [nemeses   (if-let [n (:nemesis opts)] [n] all-nemeses)
+        workloads (if-let [w (:workload opts)] [w] all-workloads)]
+    (for [i (range (:test-count opts)), n nemeses, w workloads]
+      (duckdb-test (assoc opts :nemesis n :workload w)))))
+
+(defn opt-fn
+  "Transforms CLI options before execution."
+  [parsed]
+  ; If not explicitly specified, the expected consistency model is whatever
+  ; isolation level we ask for
+  (update-in parsed [:options :expected-consistency-model]
+             #(or % (get-in parsed [:options :isolation]))))
+
+(defn -main
+  "Handles command line arguments. Can either run a test, or a web server for
+  browsing results."
+  [& args]
+  (cli/run! (merge (cli/single-test-cmd {:test-fn  duckdb-test
+                                         :opt-spec cli-opts
+                                         :opt-fn   opt-fn})
+                   (cli/test-all-cmd {:tests-fn all-tests
+                                      :opt-spec cli-opts
+                                      :opt-fn   opt-fn})
+                   (cli/serve-cmd))
+            args))
