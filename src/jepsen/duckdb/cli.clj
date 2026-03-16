@@ -15,13 +15,13 @@
                     [util :as util :refer [sh]]]
             [jepsen.checker.timeline :as timeline]
             [jepsen.nemesis.combined :as nc]
-            ;[jepsen.duckdb [append :as append]]
+            [jepsen.duckdb [append :as append]]
             ))
 
 (def workloads
   "A map of workload names to functions that take CLI options and return
   workload maps."
-  {;:append append/workload
+  {:append append/workload
    :none   (fn [_] tests/noop-test)})
 
 (def all-workloads
@@ -91,7 +91,7 @@
   the local node first, once per JVM run."
   [opts]
   (build-local!)
-  (let [workload-name (:workload opts :none)
+  (let [workload-name (:workload opts :append)
         workload ((workloads workload-name) opts)
         db       (db opts)
         nemesis  nil
