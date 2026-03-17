@@ -167,7 +167,15 @@
     :validate [(partial every? #{:pause :kill})
                "Faults must be pause, kill, or the special faults all or none."]]
 
-   (cli/repeated-opt "-n" "--node HOSTNAME" "Node(s) to run test on. Flag may be submitted many times, with one node per flag." ["l1" "l2" "l3"])
+   (cli/repeated-opt "-n" "--node HOSTNAME"
+     "Node(s) to run test on. Flag may be submitted many times, with one node per flag."
+     ; Ah, so the only two options are single rw, or multiple ro servers--they
+     ; use flock to prevent ro clients from opening a DB while a writer has it
+     ; open. Maybe down the road we look at mixing these clients by killing the
+     ; rw node, opening multiple ros, trying to get them to fight over fctrl by
+     ; repeatedly killing and restarting, etc....
+     ["l1"])
+     ;["l1" "l2" "l3"])
 
    [nil "--max-txn-length NUM" "Maximum number of operations in a transaction."
     :default  4
