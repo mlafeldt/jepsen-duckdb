@@ -15,7 +15,8 @@
   (:import (java.io BufferedReader
                     InputStreamReader
                     PushbackReader)
-           (java.sql Connection)))
+           (java.sql Connection
+                     SQLException)))
 
 ;; General SQL client stuff
 
@@ -31,14 +32,12 @@
       :read-uncommitted Connection/TRANSACTION_READ_UNCOMMITTED))
   conn)
 
-(defn open
-  "Opens a connection to the local DuckDB file. Options:
-
-      :db-file          The path to the DB file
-      :rw-mode          Either :rw or :ro
-      :isolation-level  e.g. :serializable"
+(defn open*
+  "Raw form of open, which does not retry read-only opens when the file does
+  not exist."
   [{:keys [db-file rw-mode isolation-level]}]
   (let [; TODO: temp_directory?
+        _    (info "Connecting with duck.db.read_only =" rw-mode)
         spec {:dbtype "duckdb"
               :dbname db-file
               "duckdb.read_only" (case rw-mode
@@ -49,6 +48,27 @@
     ; We use explicit isolation levels for txns later...
     ; (set-transaction-isolation! conn isolation-level)
     conn))
+
+(defn open
+  "Opens a connection to the local DuckDB file. Options:
+
+      :db-file          The path to the DB file
+      :rw-mode          Either :rw or :ro
+      :isolation-level  e.g. :serializable
+
+  For read-only clients, retries when the database does not yet exist; we're
+  presumably waiting for the writer to open it."
+  [opts]
+  (with-retry [i 10]
+    (open* opts)
+    (catch SQLException e
+      (if (and (pos? i)
+               (re-find #"in read-only mode: database does not exist"
+                        (.getMessage e)))
+        (do (info "Waiting for DB to be created...")
+            (Thread/sleep 1000)
+            (retry (dec i)))
+        (throw e)))))
 
 (defn close!
   "Closes a connection"

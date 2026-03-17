@@ -4,6 +4,14 @@ This is a small program which embeds the DuckDB Java libary and exposes a small
 HTTP server. The test builds this project, spins up instances of it, and sends
 requests to them to execute transactions.
 
+## Testing
+
+As a quick sanity check, try:
+
+```
+JEPSEN_STORE_DIR="." JEPSEN_PORT=8000 JEPSEN_ISOLATION=serializable JEPSEN_RW_MODE=rw JEPSEN_UPSERT=on-conflict lein run
+```
+
 ## License
 
 Copyright © 2026 Jepsen, LLC

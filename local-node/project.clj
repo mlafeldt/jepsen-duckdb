@@ -19,4 +19,6 @@
   :jvm-opts ["-Djava.awt.headless=true"
              ; Maybe we want faster startup by skipping server mode?
              ;"-server"
-             ])
+             ]
+  :profiles
+  {:uberjar {:aot :all}})
