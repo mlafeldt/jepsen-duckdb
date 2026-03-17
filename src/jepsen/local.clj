@@ -63,13 +63,15 @@
      :node         This node's name
      :bin          A program to run
      :args         A list of arguments to the program
+     :env          A map of environment variables (converted to strings with
+                   `name`) to merge into the environment for this process
 
   Returns a map of:
 
      :node            The node name
      :process         The java Process object started
   "
-  [test {:keys [node args bin] :as opts}]
+  [test {:keys [node args bin env] :as opts}]
   (info "Starting local node" node bin (pr-str args))
   (let [; Files and directories
         dir         (store/path! test node)
@@ -84,6 +86,8 @@
                     (.redirectError  stderr-file))
         _ (doto (.environment builder)
             (.put "JEPSEN_PORT" (str (port test node))))
+        _ (doseq [[k v] env]
+            (.put (.environment builder) (name k) (name v)))
         process (.start builder)]
     {:node    node
      :process process}))
@@ -104,7 +108,7 @@
 
 ; bin is the path to the binary we'll run. node-args is a map of node name to
 ; an arguments vector used when launching that node.
-(defrecord DB [bin node-args]
+(defrecord DB [bin node-args node-envs]
   db/Kill
   (kill! [this test node]
     (let [state (get (:local test) node)]
@@ -124,7 +128,8 @@
           (reset! state (start-process! test
                                         {:node node
                                          :bin  bin
-                                         :args (get node-args node)}))))))
+                                         :args (get node-args node)
+                                         :env  (get node-envs node)}))))))
 
   db/DB
   (setup! [this test node]
@@ -138,7 +143,8 @@
   `jepsen.db/Kill`. Options:
 
   {:bin         The binary to run
-   :node-args   A map of node names to argument vectors}"
+   :node-args   A map of node names to argument vectors
+   :node-envs   A map of node names to environment maps"
   [opts]
   (map->DB opts))
 

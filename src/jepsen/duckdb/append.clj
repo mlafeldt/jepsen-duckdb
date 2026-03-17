@@ -2,6 +2,7 @@
   "A workload for transactional list-append, checked with Elle"
   (:require [clj-commons.slingshot :refer [try+ throw+]]
             [clj-http.client :as http]
+            [clojure [edn :as edn]]
             [clojure.tools.logging :refer [info warn]]
             [elle.core :as elle]
             [jepsen [client :as client]
@@ -21,12 +22,15 @@
       (let [res (http/post (str "http://localhost:" port "/append")
                            {:body         (pr-str (:value op))
                             :content-type "application/edn"
-                            :as           :application/edn})]
-        (assoc op :type :ok, :value (:body res)))
+                            :as           :application/edn})
+            txn' (edn/read-string (:body res))]
+        (assoc op :type :ok, :value txn'))
       (catch java.net.ConnectException _
         (assoc op :type :fail, :error :conn-refused))
       (catch [:status 409] _
         (assoc op :type :fail, :error :conflict))
+      (catch [:status 500] e
+        (assoc op :type :info, :error [:server-error (:body e)]))
       (catch [:status 503] e
         (assoc op :type :info, :error [:server-error (:body e)]))))
 

@@ -1,6 +1,292 @@
-(ns jepsen.duckdb.local-node)
+(ns jepsen.duckdb.local-node
+  "A small HTTP server that does transactions against a local DuckDB file."
+  (:gen-class)
+  (:require [clj-commons.slingshot :refer [try+ throw+]]
+            [clojure [datafy :refer [datafy]]
+                     [edn :as edn]
+                     [pprint :refer [pprint]]
+                     [string :as str]]
+            [clojure.tools.logging :refer [info warn fatal]]
+            [dom-top.core :refer [loopr with-retry]]
+            [next.jdbc :as j]
+            [next.jdbc.result-set :as rs]
+            [next.jdbc.sql.builder :as sqlb]
+            [org.httpkit.server :as http])
+  (:import (java.io BufferedReader
+                    InputStreamReader
+                    PushbackReader)
+           (java.sql Connection)))
 
-(defn foo
-  "I don't do a whole lot."
-  [x]
-  (println x "Hello, World!"))
+;; General SQL client stuff
+
+(defn set-transaction-isolation!
+  "Sets the transaction isolation level on a connection. Returns conn."
+  [conn level]
+  (.setTransactionIsolation
+    conn
+    (case level
+      :serializable     Connection/TRANSACTION_SERIALIZABLE
+      :repeatable-read  Connection/TRANSACTION_REPEATABLE_READ
+      :read-committed   Connection/TRANSACTION_READ_COMMITTED
+      :read-uncommitted Connection/TRANSACTION_READ_UNCOMMITTED))
+  conn)
+
+(defn open
+  "Opens a connection to the local DuckDB file. Options:
+
+      :rw-mode          Either :rw or :ro
+      :isolation-level  e.g. :serializable"
+  [file {:keys [rw-mode isolation-level]}]
+  (let [; TODO: temp_directory?
+        spec {:dbtype "duckdb"
+              :dbname file
+              "duckdb.read_only" (case rw-mode
+                                   :rw "false"
+                                   :ro "true")}
+        ds (j/get-datasource spec)
+        conn (j/get-connection ds)]
+    ; We use explicit isolation levels for txns later...
+    ; (set-transaction-isolation! conn isolation-level)
+    conn))
+
+(defn close!
+  "Closes a connection"
+  [^Connection conn]
+  (.close conn))
+
+(defmacro with-errors
+  "Takes a body which does some SQL; evals body, throwing typed errors as
+  appropriate."
+  [& body]
+  `(try ~@body
+        ; Exception handlers here...
+        ))
+
+;; Append workload
+
+
+(def default-table-count 3)
+
+(defn table-name
+  "Takes an integer and constructs a table name."
+  [i]
+  (str "txn" i))
+
+(defn table-for
+  "What table should we use for the given key?"
+  [table-count k]
+  (table-name (mod (hash k) table-count)))
+
+(defn append-using-on-conflict!
+  "Appends an element to a key using an INSERT ... ON CONFLICT statement."
+  [conn opts table k e]
+  (j/execute!
+    conn
+    [(str "insert into " table " as t"
+          " (id, sk, val) values (?, ?, ?)"
+          " on conflict (id) do update set"
+          " val = CONCAT(t.val, ',', ?) where "
+          "t.id"
+          ; TODO: secondary keys
+          ;(if (< (rand) 0.5) "t.id" "t.sk")
+          " = ?")
+     k k e e k]))
+
+(defn insert!
+  "Performs an initial insert of a key with initial element e. Catches
+  duplicate key exceptions, returning true if succeeded. If the insert fails
+  due to a duplicate key, it'll break the rest of the transaction, assuming
+  we're in a transaction, so we establish a savepoint before inserting and roll
+  back to it on failure."
+  [conn opts txn? table k e]
+  ; TODO: DuckDB complains about our SQL when we do a savepoint, so this breaks
+  (try
+    ;(info (if txn? "" "not") "in transaction")
+    (when txn? (j/execute! conn ["savepoint upsert"]))
+    (j/execute! conn
+                [(str "insert into " table " (id, sk, val)"
+                      " values (?, ?, ?)")
+                 k k e])
+    (when txn? (j/execute! conn ["release savepoint upsert"]))
+    true
+    ; TODO: figure out what error DuckDB uses for this
+    #_(catch org.postgresql.util.PSQLException e
+        (if (re-find #"duplicate key value" (.getMessage e))
+          (do (info (if txn? "txn") "insert failed: " (.getMessage e))
+              (when txn? (j/execute! conn ["rollback to savepoint upsert"]))
+              false)
+          (throw e)))))
+
+(defn update!
+  "Performs an update of a key k, adding element e. Returns true if the update
+  succeeded, false otherwise."
+  [conn opts table k e]
+  (let [res (-> conn
+                (j/execute-one! [(str "update " table " set val = CONCAT(val, ',', ?)"
+                                      " where id = ?") e k]))]
+    ;(info :update res)
+    (-> res
+        :next.jdbc/update-count
+        pos?)))
+
+(defn mop!
+  "Executes a transactional micro-op on a connection. Returns the completed
+  micro-op."
+  [conn opts txn? [f k v]]
+  (let [table-count (:table-count opts default-table-count)
+        table (table-for table-count k)]
+    (Thread/sleep (long (rand-int 10)))
+    [f k (case f
+           :r (let [r (j/execute! conn
+                                  [(str "select (val) from " table " where "
+                                        ;(if (< (rand) 0.5) "id" "sk")
+                                        "id"
+                                        " = ? ")
+                                   k]
+                                  {:builder-fn rs/as-unqualified-lower-maps})]
+                (when-let [v (:val (first r))]
+                  (mapv parse-long (str/split v #","))))
+
+           :append
+           (let [vs (str v)]
+             ; TOOD: more sophisticated dispatching here
+             (if (:on-conflict (:upsert opts))
+               ; Use ON CONFLICT
+               (append-using-on-conflict! conn opts table k vs)
+               ; TODO: this does not work in DuckDB yet; investigate
+               ; Try an update, and if that fails, back off to an insert.
+               (or (update! conn opts table k vs)
+                   ; No dice, fall back to an insert
+                   (insert! conn opts txn? table k vs)
+                   ; OK if THAT failed then we probably raced with another
+                   ; insert; let's try updating again.
+                   (update! conn opts table k vs)
+                   ; And if THAT failed, all bets are off. This happens even
+                   ; under SERIALIZABLE, but I don't think it technically
+                   ; VIOLATES serializability.
+                   (throw+ {:type     :conflict
+                            :key      k
+                            :element  v})))
+             v))]))
+
+(defn append-txn!
+  "Takes a list-append transaction and applies it, returning a completed
+  transaction, or throwing. Options are:
+
+    :isolation - The isolation level passed to the txn."
+  [conn txn opts]
+  (with-errors
+    (let [use-txn?  (< 1 (count txn))
+          txn'      (if use-txn?
+                      ;(if true
+                      (j/with-transaction [t conn
+                                           ; Client doesn't support this yet
+                                           #_{:isolation (:isolation opts)}]
+                        (mapv (partial mop! t opts true) txn))
+                      (mapv (partial mop! conn opts false) txn))]
+      txn')))
+
+;; Server
+
+(defn setup!
+  "Sets up the DB connection on initial startup."
+  [conn opts]
+  (info "Setting up tables...")
+  (j/with-transaction [t conn
+                       ; Client doesn't support this yet
+                       #_{:isolation (:isolation opts)}]
+    (dotimes [i (:table-count opts default-table-count)]
+      (j/execute! conn
+                  [(str "create table if not exists " (table-name i)
+                        " (id int not null primary key,
+                        sk int not null,
+                        val text)")]))))
+
+(defn handle*
+  "Takes a deserialized request body and processes it, returning an
+  unserialized response body."
+  [conn body opts]
+  (append-txn! conn body opts))
+
+(defn handler
+  "Returns a function that handles HTTP requests."
+  [conn opts]
+  (fn handle [req]
+    (try+
+      (let [; Deserialize request body
+            ; _ (pprint req)
+            body (edn/read (PushbackReader.
+                             (BufferedReader.
+                               (InputStreamReader. (:body req) "UTF-8"))))
+            res (handle* conn body opts)]
+        {:status 200
+         :headers {"Content-Type" "application/edn"}
+         :body    (pr-str res)})
+
+      (catch [:type :conflict] _
+        {:status 409
+         :headers {"Content-Type" "application/edn"}
+         :body    ":conflict"})
+
+      ; RuntimeExceptions we send back to the client and swallow
+      (catch RuntimeException e
+        (warn e "Exception handling request")
+        {:status "503"
+         :headers {"Content-Type" "application/edn"}
+         :body    (datafy e)})
+
+      ; Other Throwables we log and explode
+      (catch Throwable t
+        (fatal t "Fatal exception handling request")
+        (throw t)))))
+
+(defn read-opts
+  "Reads enviromnent variable and returns a nice parsed option map. For
+  example:
+
+    {:port      10002
+     :isolation :repeatable-read
+     :rw-mode   :ro
+     :upsert    #{:on-conflict ...}}"
+  []
+  (let [port      (parse-long (System/getenv "JEPSEN_PORT"))
+        isolation (keyword (System/getenv "JEPSEN_ISOLATION"))
+        rw-mode   (keyword (System/getenv "JEPSEN_RW_MODE"))
+        upsert    (set (map keyword
+                            (str/split (System/getenv "JEPSEN_UPSERT") #",")))]
+    (assert (pos? port))
+    (assert #{:serializable
+              :repeatable-read
+              :read-committed
+              :read-uncommitted} isolation)
+    (assert #{:ro :rw} rw-mode)
+    (assert (every? #{:on-conflict} upsert))
+    {:port      port
+     :isolation isolation
+     :rw-mode   rw-mode
+     :upsert    upsert}))
+
+(defn -main
+  "Main entrypoint. Arguments are <data-file>. Environment variables are:
+
+  JEPSEN_PORT       The local HTTP port to bind
+
+  JEPSEN_ISOLATION  e.g. serializable, repeatable-read, etc. Presently ignored;
+                    DuckDB will throw if you try to set it.
+
+  JEPSEN_RW_MODE    Either rw (read-write) or ro (read-only)
+
+  JEPSEN_UPSERT     A comma-separated list of tactics we use for upserting,
+                    like \"on-conflict,insert\"; see mop! for details."
+  [data-file]
+  (try
+    (let [opts (read-opts)
+          conn (open data-file opts)]
+      (setup! conn opts)
+      (http/run-server (handler conn opts) (select-keys opts [:port]))
+      (info "Waiting for HTTP requests on port" (:port opts))
+      (while true
+        (Thread/sleep 100000)))
+    (catch Throwable t
+      (fatal t "Fatal error")
+      (System/exit 1))))
