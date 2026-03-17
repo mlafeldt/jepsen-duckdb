@@ -166,7 +166,16 @@
 
 (def cli-opts
   "Command line options"
-  [["-i" "--isolation LEVEL" "What level of isolation we should set: serializable, repeatable-read, etc."
+  [[nil "--concurrency NUMBER" "How many workers should we run? Must be an integer, optionally followed by n (e.g. 3n) to multiply by the number of nodes."
+    :default  "3n"
+    :validate [(partial re-find #"^\d+n?$")
+               "Must be an integer, optionally followed by n."]]
+
+   [nil "--expected-consistency-model MODEL" "What level of isolation do we *expect* to observe? Defaults to the same as --isolation."
+    :default nil
+    :parse-fn keyword]
+
+   ["-i" "--isolation LEVEL" "What level of isolation we should set: serializable, repeatable-read, etc."
     :default :serializable
     :parse-fn keyword
     :validate [#{:read-uncommitted
@@ -174,10 +183,6 @@
                  :repeatable-read
                  :serializable}
                "Should be one of read-uncommitted, read-committed, repeatable-read, or serializable"]]
-
-   [nil "--expected-consistency-model MODEL" "What level of isolation do we *expect* to observe? Defaults to the same as --isolation."
-    :default nil
-    :parse-fn keyword]
 
    [nil "--key-count NUM" "Number of keys in active rotation."
     :default  10
@@ -188,6 +193,8 @@
     :parse-fn parse-nemesis-spec
     :validate [(partial every? #{:pause :kill})
                "Faults must be pause, kill, or the special faults all or none."]]
+
+   (cli/repeated-opt "-n" "--node HOSTNAME" "Node(s) to run test on. Flag may be submitted many times, with one node per flag." ["l1" "l2" "l3"])
 
    [nil "--max-txn-length NUM" "Maximum number of operations in a transaction."
     :default  4
