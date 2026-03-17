@@ -12,7 +12,8 @@
                  [org.clojure/clojure "1.12.4"]
                  [org.clj-commons/slingshot "0.13.0"]
                  [org.clojure/tools.logging "1.3.0"]
-                 [org.duckdb/duckdb_jdbc "1.5.0.0"]
+                 ; [org.duckdb/duckdb_jdbc "1.5.0.0"]
+                 [org.duckdb/duckdb_jdbc "1.5.1.0-7e03e76d-SNAPSHOT"]
                  [spootnik/unilog "0.7.32"]]
   :main jepsen.duckdb.local-node
   :repl-options {:init-ns jepsen.duckdb.local-node}

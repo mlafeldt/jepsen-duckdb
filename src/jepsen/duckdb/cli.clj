@@ -72,10 +72,11 @@
   (locking local-built?
     (when-not @local-built?
       (info "Building local node...")
-      (sh "lein" "uberjar",
-          :dir local-dir,
+      (sh "lein" "uberjar"
+          :dir local-dir
           :env (-> (into {} (System/getenv))
-                   (dissoc "CLASSPATH")))
+                   (dissoc "CLASSPATH")
+                   (assoc "LEIN_SNAPSHOTS_IN_RELEASE" "TRUE")))
       (sh "/bin/bash" "-c" "mv target/*-standalone.jar local-node.jar"
           :dir local-dir)
       (reset! local-built? true))))
