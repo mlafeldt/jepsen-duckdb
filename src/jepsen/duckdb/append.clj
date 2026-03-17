@@ -20,9 +20,10 @@
   (invoke! [this test op]
     (try+
       (let [res (http/post (str "http://localhost:" port "/append")
-                           {:body         (pr-str (:value op))
-                            :content-type "application/edn"
-                            :as           :application/edn})
+                           {:body               (pr-str (:value op))
+                            :content-type       "application/edn"
+                            :socket-timeout     5000
+                            :connection-timeout 1000})
             txn' (edn/read-string (:body res))]
         (assoc op :type :ok, :value txn'))
       (catch java.net.ConnectException _
