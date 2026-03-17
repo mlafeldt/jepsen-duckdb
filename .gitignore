@@ -14,3 +14,5 @@ pom.xml.asc
 /.prepl-port
 .hgignore
 .hg/
+duck.db
+duck.db.wal
