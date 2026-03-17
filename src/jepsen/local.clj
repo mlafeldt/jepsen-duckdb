@@ -23,7 +23,11 @@
   For convenience, local nodes are assigned sequential ports from
   `starting-port`, based on their index in (:nodes test). When started, this
   port is available to the process in `JEPSEN_PORT`. You can use this to (e.g.)
-  open HTTP connections to each local node."
+  open HTTP connections to each local node.
+
+  Another environment variable, JEPSEN_STORE_DIR, is the full path to the store
+  directory for the current test run. You can use this to write data
+  files directly in the store dir."
   (:refer-clojure :exclude [test])
   (:require [clojure [pprint :refer [pprint]]
                      [string :as str]]
@@ -85,6 +89,7 @@
                     (.redirectOutput stdout-file)
                     (.redirectError  stderr-file))
         _ (doto (.environment builder)
+            (.put "JEPSEN_STORE_DIR" (.getCanonicalPath (store/path test)))
             (.put "JEPSEN_PORT" (str (port test node))))
         _ (doseq [[k v] env]
             (.put (.environment builder) (name k) (name v)))

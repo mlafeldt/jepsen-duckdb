@@ -34,12 +34,13 @@
 (defn open
   "Opens a connection to the local DuckDB file. Options:
 
+      :db-file          The path to the DB file
       :rw-mode          Either :rw or :ro
       :isolation-level  e.g. :serializable"
-  [file {:keys [rw-mode isolation-level]}]
+  [{:keys [db-file rw-mode isolation-level]}]
   (let [; TODO: temp_directory?
         spec {:dbtype "duckdb"
-              :dbname file
+              :dbname db-file
               "duckdb.read_only" (case rw-mode
                                    :rw "false"
                                    :ro "true")}
@@ -244,16 +245,20 @@
   "Reads enviromnent variable and returns a nice parsed option map. For
   example:
 
-    {:port      10002
+    {:db-file   \"/foo/duck.db\"
+     :port      10002
      :isolation :repeatable-read
      :rw-mode   :ro
      :upsert    #{:on-conflict ...}}"
   []
-  (let [port      (parse-long (System/getenv "JEPSEN_PORT"))
+  (let [store-dir (System/getenv "JEPSEN_STORE_DIR")
+        port      (parse-long (System/getenv "JEPSEN_PORT"))
         isolation (keyword (System/getenv "JEPSEN_ISOLATION"))
         rw-mode   (keyword (System/getenv "JEPSEN_RW_MODE"))
         upsert    (set (map keyword
-                            (str/split (System/getenv "JEPSEN_UPSERT") #",")))]
+                            (str/split (or (System/getenv "JEPSEN_UPSERT") "")
+                                       #",")))]
+    (assert (and (string? store-dir) (not= "" store-dir)))
     (assert (pos? port))
     (assert #{:serializable
               :repeatable-read
@@ -261,13 +266,15 @@
               :read-uncommitted} isolation)
     (assert #{:ro :rw} rw-mode)
     (assert (every? #{:on-conflict} upsert))
-    {:port      port
+    {:db-file   (str store-dir "/duck.db")
+     :port      port
      :isolation isolation
      :rw-mode   rw-mode
      :upsert    upsert}))
 
 (defn -main
-  "Main entrypoint. Arguments are <data-file>. Environment variables are:
+  "Main entrypoint. All behavior is taken from the following environment
+  variables:
 
   JEPSEN_PORT       The local HTTP port to bind
 
@@ -278,10 +285,10 @@
 
   JEPSEN_UPSERT     A comma-separated list of tactics we use for upserting,
                     like \"on-conflict,insert\"; see mop! for details."
-  [data-file]
+  []
   (try
     (let [opts (read-opts)
-          conn (open data-file opts)]
+          conn (open opts)]
       (setup! conn opts)
       (http/run-server (handler conn opts) (select-keys opts [:port]))
       (info "Waiting for HTTP requests on port" (:port opts))

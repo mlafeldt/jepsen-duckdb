@@ -80,46 +80,19 @@
           :dir local-dir)
       (reset! local-built? true))))
 
-(def db-file
-  "The local DuckDB file"
-  "duck.db")
-
-(def wal-file
-  "The corresponding DuckDB WAL file"
-  (str db-file ".wal"))
-
-(defrecord DB [db]
-  db/DB
-  (setup! [this test node]
-    (db/setup! db test node))
-
-  (teardown! [this test node]
-    (db/teardown! db test node)
-    (io/delete-file db-file true)
-    (io/delete-file wal-file true))
-
-  db/Kill
-  (kill! [this test node]
-    (db/kill! db test node))
-
-  (start! [this test node]
-    (db/start! db test node)))
-
 (defn db
   "Constructs a local DB given CLI opts."
   [opts]
   (let [; Base arguments
-        args ["-jar" (.getCanonicalPath (io/file local-dir "local-node.jar"))
-              db-file]
+        args ["-jar" (.getCanonicalPath (io/file local-dir "local-node.jar"))]
         env  {"JEPSEN_ISOLATION" (:isolation opts)
               "JEPSEN_UPSERT" "on-conflict"}
         primary-env (assoc env "JEPSEN_RW_MODE" "rw")
         secondary-env (assoc env "JEPSEN_RW_MODE" "ro")]
-    (DB.
       (local/db {:bin "/usr/bin/java"
                  :node-args (zipmap (:nodes opts) (repeat args))
                  :node-envs (zipmap (:nodes opts)
-                                    (cons primary-env (repeat secondary-env)))}))))
+                                    (cons primary-env (repeat secondary-env)))})))
 
 (defn duckdb-test
   "Given options from the CLI, constructs a test map. As a side effect, builds
