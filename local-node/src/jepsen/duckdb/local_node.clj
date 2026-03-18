@@ -47,7 +47,8 @@
 (defn open*
   "Raw form of open, which does not retry read-only opens when the file does
   not exist."
-  [{:keys [db-file rw-mode isolation-level]}]
+  [{:keys [db-file rw-mode]}]
+  (info "Opening" db-file)
   (let [; TODO: temp_directory?
         spec {:dbtype "duckdb"
               :dbname db-file
@@ -56,8 +57,6 @@
                                    :ro "true")}
         ds (j/get-datasource spec)
         conn (j/get-connection ds)]
-    ; We use explicit isolation levels for txns later...
-    ; (set-transaction-isolation! conn isolation-level)
     conn))
 
 (defn open
@@ -84,22 +83,42 @@
 (defn close!
   "Closes a connection"
   [^Connection conn]
+  (info "Closing DB connection")
   (.close conn))
 
-(defmacro with-conn
+(defmacro with-conn-duplicate
   "Multiple threads can use a DuckDB client concurrently, but they can't share
   a single sql.Connection. Instead, we duplicate a connection for the scope of
   a single request. I'm not totally sure what the semantics *should* be here;
   this is a bit of a guess.
 
-  Takes a binding form `[conn-name conn]` and a body. Duplicates `conn`, binds
-  it to `conn-name`, and evaluates body, closing `conn-name` at the end."
-  [[conn-name conn] & body]
+  Takes global opts, a binding form `[conn-name conn]` and a body. Duplicates
+  `conn`, binds it to `conn-name`, and evaluates body, closing `conn-name` at
+  the end."
+  [opts [conn-name conn] & body]
   (let [conn (vary-meta conn assoc :tag 'org.duckdb.DuckDBConnection)]
     `(let [~conn-name (.duplicate ~conn)]
        (try ~@body
             (finally
               (.close ~conn-name))))))
+
+(defmacro with-conn-open
+  "Multiple threads can use a DuckDB client concurrently, but they can't share
+  a single sql.Connection. This version of `with-conn` opens a fresh Connection
+  every time."
+  [opts [conn-name conn] & body]
+  `(let [~conn-name (open ~opts)]
+     (try ~@body
+          (finally
+            (.close ~conn-name)))))
+
+(defmacro with-conn
+  "Acquires a connection for the use of a single thread's request. Takes global
+  opts, a binding form [conn-name conn], and a body. Evaluates body with
+  `conn-name` bound to a connection which is (supposed to be) safe for use by a
+  thread."
+  [opts binding & body]
+  `(with-conn-open ~opts ~binding ~@body))
 
 (defmacro with-errors
   "Takes a body which does some SQL; evals body, throwing typed errors as
@@ -254,7 +273,7 @@
   [conn txn opts]
   (with-errors
     (let [use-txn?  (< 1 (count txn))
-          _         (info "Using txn")
+          ;_         (info "Using txn")
           txn'      (if use-txn?
                       (with-transaction [t conn
                                          ; Client doesn't support this yet
@@ -284,7 +303,7 @@
   "Takes a deserialized request body and processes it, returning an
   unserialized response body."
   [conn body opts]
-  (with-conn [conn conn]
+  (with-conn opts [conn conn]
     (with-logging opts [conn conn]
       (when (:log-sql opts) (info "request:" (pr-str body)))
       (let [res (append-txn! conn body opts)]
