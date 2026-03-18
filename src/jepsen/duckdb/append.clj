@@ -36,7 +36,10 @@
       (catch [:status 503] e
         (assoc op :type :info, :error [:server-error (:body e)]))))
 
-  (teardown! [this test])
+  (teardown! [this test]
+    (http/post (str "http://localhost:" port "/write-logs")
+               {:socket-timeout     5000
+                :connection-timeout 1000}))
 
   (close! [this test]))
 

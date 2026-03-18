@@ -335,6 +335,10 @@
   "Sets up the DB connection on initial startup."
   [conn opts]
   (with-logging opts [conn conn]
+    (when (:duckdb-log opts)
+      (info "Enabling DuckDB logging")
+      (j/execute! conn ["CALL enable_logging()"]))
+
     (when (:disable-index-scan opts)
       (info "Disabling index scans")
       (j/execute! conn ["SET index_scan_percentage=0"])
@@ -354,15 +358,34 @@
                           sk int not null,
                           val text)")])))))
 
+(def logs-written? (atom false))
+
+(defn write-logs!
+  "Writes logs to the duckdb file. Only callable once."
+  [conn opts]
+  (if (:duckdb-log opts)
+    (locking logs-written?
+      (if @logs-written?
+        :already-written
+        (do ; Write
+            (info "Saving DuckDB logs to table `jepsen_logs`")
+            (j/execute! conn ["CREATE TABLE jepsen_logs AS SELECT * from duckdb_logs"])
+            (reset! logs-written? true)
+            :written)))
+    :disabled))
+
 (defn handle*
-  "Takes a deserialized request body and processes it, returning an
+  "Takes a request with a deserialized body and processes it, returning an
   unserialized response body."
-  [conn body opts]
+  [conn opts req]
   (with-conn opts [conn conn]
     (with-logging opts [conn conn]
-      (when (:log-sql opts) (info "request:" (pr-str body)))
-      (let [res (append-txn! conn body opts)]
-        (when (:log-sql opts) (info "response:" (pr-str res)))
+      (let [{:keys [body uri]} req
+            _ (when (:log-sql opts) (info "request:" uri (pr-str body)))
+            res (case uri
+                  "/append"     (append-txn! conn body opts)
+                  "/write-logs" (write-logs! conn opts))]
+        (when (:log-sql opts) (info "response:" uri (pr-str res)))
         res))))
 
 (defn handler
@@ -372,10 +395,12 @@
     (try+
       (let [; Deserialize request body
             ; _ (pprint req)
-            body (edn/read (PushbackReader.
-                             (BufferedReader.
-                               (InputStreamReader. (:body req) "UTF-8"))))
-            res (handle* conn body opts)]
+            body (when (:body req)
+                   (edn/read (PushbackReader.
+                               (BufferedReader.
+                                 (InputStreamReader. (:body req) "UTF-8")))))
+            req (assoc req :body body)
+            res (handle* conn opts req)]
         {:status  200
          :headers {"Content-Type" "application/edn"}
          :body    (pr-str res)})

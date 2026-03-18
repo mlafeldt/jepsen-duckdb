@@ -162,6 +162,8 @@
 
    [nil "--disable-optimizer" "If set, disables the DuckDB optimizer via a pragma."]
 
+   [nil "--duckdb-log" "If set, also asks DuckDB to log transactions directly to the duckdb file."]
+
    [nil "--expected-consistency-model MODEL" "What level of isolation do we *expect* to observe? Defaults to the same as --isolation."
     :default nil
     :parse-fn keyword]
