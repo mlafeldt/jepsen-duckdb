@@ -27,8 +27,11 @@
   statements to the console."
   [opts [conn-name conn] & body]
   `(let [~conn-name (if (:log-sql ~opts)
-                      (j/with-logging ~conn (fn ~'log [op# sql#]
-                                              (info op# (pr-str sql#))))
+                      (j/with-logging ~conn
+                        (fn ~'sql-log [op# sql#]
+                          (info op# "query" (pr-str sql#)))
+                        (fn ~'res-log [op# state# res#]
+                          (info op# "result" (pr-str res#))))
                       ~conn)]
      ~@body))
 
