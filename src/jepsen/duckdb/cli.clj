@@ -42,12 +42,18 @@
    ;:all [:pause :kill :partition :clock]})
    :all  []})
 
+(defn parse-comma-separated-kws
+  "Takes a string of comma-separated values and turns it into a vector of
+  keywords."
+  [s]
+  (->> (str/split s #",")
+       (mapv keyword)))
+
 (defn parse-nemesis-spec
   "Takes a comma-separated nemesis string and returns a collection of keyword
   faults."
   [spec]
-  (->> (str/split spec #",")
-       (map keyword)
+  (->> (parse-comma-separated-kws spec)
        (mapcat #(get special-nemeses % [%]))))
 
 (def short-isolation
@@ -87,7 +93,7 @@
   (let [; Base arguments
         args ["-jar" (.getCanonicalPath (io/file local-dir "local-node.jar"))]
         env  (cond-> {"JEPSEN_ISOLATION" (:isolation opts)
-                      "JEPSEN_UPSERT" "on-conflict"}
+                      "JEPSEN_UPSERT" (str/join "," (map name (:upsert opts)))}
                (:log-sql opts)
                (assoc "JEPSEN_LOG_SQL" "TRUE"))
         primary-env (assoc env "JEPSEN_RW_MODE" "rw")
@@ -201,6 +207,14 @@
     :default  1000
     :parse-fn read-string
     :validate [pos? "Must be a positive number."]]
+
+   [nil "--upsert TACTICS" "Comma-separated list of tactics to use for upserting values."
+    :default [:on-conflict :update-insert]
+    :parse-fn parse-comma-separated-kws
+    :validate [(fn [tactics]
+                 (and (not (empty? tactics))
+                      (every? #{:on-conflict :update-insert} tactics)))
+               "Tactics must be either on-conflict or update-insert."]]
 
    ["-w" "--workload NAME" "What workload should we run?"
     :parse-fn keyword

@@ -9,7 +9,8 @@
             [clojure.tools.logging :refer [info warn fatal]]
             [dom-top.core :refer [loopr with-retry]]
             [next.jdbc :as j]
-            [next.jdbc.result-set :as rs]
+            [next.jdbc [protocols :as jp]
+                       [result-set :as rs]]
             [next.jdbc.sql.builder :as sqlb]
             [org.httpkit.server :as http])
   (:import (java.io BufferedReader
@@ -136,6 +137,31 @@
 
             (throw e#)))))
 
+(defn set-savepoint!
+  "Creates a savepoint on a next.jdbc connection."
+  [conn name]
+  (info :conn (type conn) "is a Connection?" (instance? Connection conn))
+  (let [^Connection conn (if (instance? Connection conn)
+                           conn
+                           (jp/unwrap conn))]
+    (.setSavepoint conn name)))
+
+(defn release-savepoint!
+  "Releases a savepoint on a next.jdbc connection."
+  [conn savepoint]
+  (let [^Connection conn (if (instance? Connection conn)
+                           conn
+                           (jp/unwrap conn))]
+    (.releaseSavepoint conn name)))
+
+(defn rollback-savepoint!
+  "Releases a savepoint on a next.jdbc connection."
+  [conn savepoint]
+  (let [^Connection conn (if (instance? Connection conn)
+                           conn
+                           (jp/unwrap conn))]
+    (.rollbackSavepoint conn name)))
+
 ;; Append workload
 
 
@@ -166,28 +192,28 @@
           " = ?")
      k k e e k]))
 
+
 (defn insert!
   "Performs an initial insert of a key with initial element e. Catches
   duplicate key exceptions, returning true if succeeded. If the insert fails
-  due to a duplicate key, it'll break the rest of the transaction, assuming
-  we're in a transaction, so we establish a savepoint before inserting and roll
-  back to it on failure."
+  due to a duplicate key, it'll break the rest of the transaction (assuming
+  we're in a transaction), so we establish a savepoint before inserting and
+  roll back to it on failure."
   [^Connection conn opts txn? table k e]
   ; TODO: DuckDB complains about our SQL when we do a savepoint, so this breaks
-  (let [savepoint (when txn? (.setSavepoint conn "upsert"))]
+  (let [savepoint (when txn? (set-savepoint! conn "upsert"))]
     (try
       ;(info (if txn? "" "not") "in transaction")
       (j/execute! conn
                   [(str "insert into " table " (id, sk, val)"
                         " values (?, ?, ?)")
                    k k e])
-      (when txn? (.releaseSavepoint conn savepoint))
+      (when txn? (release-savepoint! conn savepoint))
       true
-      ; TODO: figure out what error DuckDB uses for this
-      #_(catch org.postgresql.util.PSQLException e
-          (if (re-find #"duplicate key value" (.getMessage e))
+      (catch SQLException e
+          (if (re-find #"[Dd]uplicate key" (.getMessage e))
             (do (info (if txn? "txn") "insert failed: " (.getMessage e))
-                (when txn? (.releaseSavepoint conn savepoint))
+                (when txn? (rollback-savepoint! conn savepoint))
                 false)
             (throw e))))))
 
@@ -202,6 +228,21 @@
     (-> res
         :next.jdbc/update-count
         pos?)))
+
+(defn append-using-update-insert!
+  "Appends an element to a key using an UPDATE, and if that fails, an INSERT,
+  and if that fails, an UPDATE again (on the hopes that someone else INSERTed"
+  [conn opts txn? table k e]
+  (or (update! conn opts table k e)
+      (insert! conn opts txn? table k e)
+      (update! conn opts table k e)
+      ; And if THAT failed, all bets are off. This happens even under
+      ; SERIALIZABLE, but I don't think it technically *violates*
+      ; serializability.
+      (throw+ {:type      :homebrew-upsert-failed
+               :definite? true
+               :key       k
+               :element   e})))
 
 (defn mop!
   "Executes a transactional micro-op on a connection. Returns the completed
@@ -223,24 +264,12 @@
 
            :append
            (let [vs (str v)]
-             ; TOOD: more sophisticated dispatching here
-             (if (:on-conflict (:upsert opts))
-               ; Use ON CONFLICT
+             (case (rand-nth (:upsert opts))
+               :on-conflict
                (append-using-on-conflict! conn opts table k vs)
-               ; TODO: this does not work in DuckDB yet; investigate
-               ; Try an update, and if that fails, back off to an insert.
-               (or (update! conn opts table k vs)
-                   ; No dice, fall back to an insert
-                   (insert! conn opts txn? table k vs)
-                   ; OK if THAT failed then we probably raced with another
-                   ; insert; let's try updating again.
-                   (update! conn opts table k vs)
-                   ; And if THAT failed, all bets are off. This happens even
-                   ; under SERIALIZABLE, but I don't think it technically
-                   ; VIOLATES serializability.
-                   (throw+ {:type     :conflict
-                            :key      k
-                            :element  v})))
+
+               :update-insert
+               (append-using-update-insert! conn opts txn? table k vs))
              v))]))
 
 (defn ensure-abort!
@@ -346,6 +375,13 @@
         (fatal t "Fatal exception handling request")
         (throw t)))))
 
+(defn parse-comma-separated-kws
+  "Takes a string of comma-separated values and turns it into a vector of
+  keywords."
+  [s]
+  (->> (str/split s #",")
+       (mapv keyword)))
+
 (defn read-opts
   "Reads enviromnent variable and returns a nice parsed option map. For
   example:
@@ -362,9 +398,8 @@
         isolation (keyword (System/getenv "JEPSEN_ISOLATION"))
         log-sql   (boolean (System/getenv "JEPSEN_LOG_SQL"))
         rw-mode   (keyword (System/getenv "JEPSEN_RW_MODE"))
-        upsert    (set (map keyword
-                            (str/split (or (System/getenv "JEPSEN_UPSERT") "")
-                                       #",")))]
+        upsert    (parse-comma-separated-kws
+                    (or (System/getenv "JEPSEN_UPSERT") ""))]
     (assert (and (string? store-dir) (not= "" store-dir)))
     (assert (pos? port))
     (assert #{:serializable
@@ -372,7 +407,7 @@
               :read-committed
               :read-uncommitted} isolation)
     (assert #{:ro :rw} rw-mode)
-    (assert (every? #{:on-conflict} upsert))
+    (assert (every? #{:on-conflict :update-insert} upsert))
     {:db-file   (str store-dir "/duck.db")
      :port      port
      :isolation isolation
@@ -395,7 +430,7 @@
   JEPSEN_RW_MODE    Either rw (read-write) or ro (read-only)
 
   JEPSEN_UPSERT     A comma-separated list of tactics we use for upserting,
-                    like \"on-conflict,insert\"; see mop! for details."
+                    like \"on-conflict,update-insert\"; see mop! for details."
   []
   (try
     (let [opts (read-opts)

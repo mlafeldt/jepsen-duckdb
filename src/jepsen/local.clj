@@ -76,7 +76,7 @@
      :process         The java Process object started
   "
   [test {:keys [node args bin env] :as opts}]
-  (info "Starting local node" node bin (pr-str args))
+  (info "Starting local node" node bin (pr-str args) "with env\n" (with-out-str (pprint env)))
   (let [; Files and directories
         dir         (store/path! test node)
         stdout-file (store/path! test node "stdout.log")
