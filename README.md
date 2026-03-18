@@ -1,14 +1,49 @@
 # Jepsen DuckDB Test
 
-This is not ready yet.
-
 Jepsen tests for the DucKDB database. Runs locally, rather than on a remote
 cluster. The test spawns a collection of local processes which open a DuckDB
 file locally, and interacts with them over STDIN/STDOUT.
 
+This is an early prototype. It turns on, runs transactions, checks them for correctness, and reports bugs, but I'm not sure if those bugs are real.
+
+## Installation
+
+You'll need a JDK (21+), Git, Gnuplot, Graphviz, plus
+[Leiningen](https://leiningen.org/). Unlike most Jepsen tests this runs
+entirely locally; you don't need a cluster of machines, SSH keys, etc.
+
 ## Usage
 
-lein run test-all
+To run a test, try:
+
+```
+lein run test
+```
+
+Help for the various options is available through `lein run test --help`.
+
+Test results are written to `store/<test-name>/<date>/`, and symlinked as
+`store/latest`. Each of these test directories is self-contained; you can copy
+it around, tar it up, analyze one later, delete it, and so on. You can also run
+a web server to browse results.
+
+```
+lein run serve
+```
+
+A [REPL is
+available](https://github.com/jepsen-io/jepsen?tab=readme-ov-file#working-with-the-repl); see `lein repl`.
+
+## Structure
+
+The test harness lives in this directory; its project file is `project.clj`,
+its source lives in `src/`, and so on.
+
+Because we want to test what happens when you kill a process running DuckDB,
+the actual code that talks to the DuckDB library lives in a separate process,
+called a *local node*. The `local-node` directory is its own Clojure project,
+which the test harness automatically builds and runs. The harness communicates
+with one or more local nodes via HTTP.
 
 ## License
 
