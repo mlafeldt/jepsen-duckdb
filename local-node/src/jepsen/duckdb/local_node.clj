@@ -110,7 +110,7 @@
           (condp re-find (.getMessage e#)
             #"Conflict on update!" (throw+ {:type :conflict, :definite? true})
 
-            #"Duplicate key" (throw+ {:type :duplicate-key, :definite? true})
+            #"[Dd]uplicate key" (throw+ {:type :duplicate-key, :definite? true})
 
             (throw e#)))))
 
@@ -221,6 +221,18 @@
                             :element  v})))
              v))]))
 
+(defn ensure-abort!
+  "Ensures any currently-running transaction has been aborted. If no
+  transaction is running, does nothing."
+  [conn]
+  (try
+    (j/execute! conn ["ABORT"])
+    true
+    (catch SQLException e
+      (if (re-find #"no transaction is active" (.getMessage e))
+        false ; Sure, whatever
+        (throw e)))))
+
 (defmacro with-transaction
   "I'm not sure if DuckDB actually respects j/with-txn, so let's try rolling
   our own just to be sure."
@@ -231,7 +243,7 @@
             (j/execute! ~conn-name ["COMMIT"])
             res#)
           (catch Throwable t#
-            (j/execute! ~conn-name ["ABORT"])
+            (ensure-abort! ~conn-name)
             (throw t#)))))
 
 (defn append-txn!
