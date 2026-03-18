@@ -20,6 +20,18 @@
 
 ;; General SQL client stuff
 
+(defmacro with-logging
+  "Takes an options map, a binding vector of [conn-name jdbc-connection], and a
+  body. Binds `conn-name` to a JDBC connection and evaluates body, presumably
+  using `conn-name`. If `(:log-sql opts)` is truthy, `conn-name` will log SQL
+  statements to the console."
+  [opts [conn-name conn] & body]
+  `(let [~conn-name (if (:log-sql ~opts)
+                      (j/with-logging ~conn (fn ~'log [op# sql#]
+                                              (info op# (pr-str sql#))))
+                      ~conn)]
+     ~@body))
+
 (defn set-transaction-isolation!
   "Sets the transaction isolation level on a connection. Returns conn."
   [conn level]
@@ -37,7 +49,6 @@
   not exist."
   [{:keys [db-file rw-mode isolation-level]}]
   (let [; TODO: temp_directory?
-        _    (info "Connecting with duck.db.read_only =" rw-mode)
         spec {:dbtype "duckdb"
               :dbname db-file
               "duckdb.read_only" (case rw-mode
@@ -75,13 +86,33 @@
   [^Connection conn]
   (.close conn))
 
+(defmacro with-conn
+  "Multiple threads can use a DuckDB client concurrently, but they can't share
+  a single sql.Connection. Instead, we duplicate a connection for the scope of
+  a single request. I'm not totally sure what the semantics *should* be here;
+  this is a bit of a guess.
+
+  Takes a binding form `[conn-name conn]` and a body. Duplicates `conn`, binds
+  it to `conn-name`, and evaluates body, closing `conn-name` at the end."
+  [[conn-name conn] & body]
+  (let [conn (vary-meta conn assoc :tag 'org.duckdb.DuckDBConnection)]
+    `(let [~conn-name (.duplicate ~conn)]
+       (try ~@body
+            (finally
+              (.close ~conn-name))))))
+
 (defmacro with-errors
   "Takes a body which does some SQL; evals body, throwing typed errors as
   appropriate."
   [& body]
   `(try ~@body
-        ; Exception handlers here...
-        ))
+        (catch SQLException e#
+          (condp re-find (.getMessage e#)
+            #"Conflict on update!" (throw+ {:type :conflict, :definite? true})
+
+            #"Duplicate key" (throw+ {:type :duplicate-key, :definite? true})
+
+            (throw e#)))))
 
 ;; Append workload
 
@@ -119,24 +150,24 @@
   due to a duplicate key, it'll break the rest of the transaction, assuming
   we're in a transaction, so we establish a savepoint before inserting and roll
   back to it on failure."
-  [conn opts txn? table k e]
+  [^Connection conn opts txn? table k e]
   ; TODO: DuckDB complains about our SQL when we do a savepoint, so this breaks
-  (try
-    ;(info (if txn? "" "not") "in transaction")
-    (when txn? (j/execute! conn ["savepoint upsert"]))
-    (j/execute! conn
-                [(str "insert into " table " (id, sk, val)"
-                      " values (?, ?, ?)")
-                 k k e])
-    (when txn? (j/execute! conn ["release savepoint upsert"]))
-    true
-    ; TODO: figure out what error DuckDB uses for this
-    #_(catch org.postgresql.util.PSQLException e
-        (if (re-find #"duplicate key value" (.getMessage e))
-          (do (info (if txn? "txn") "insert failed: " (.getMessage e))
-              (when txn? (j/execute! conn ["rollback to savepoint upsert"]))
-              false)
-          (throw e)))))
+  (let [savepoint (when txn? (.setSavepoint conn "upsert"))]
+    (try
+      ;(info (if txn? "" "not") "in transaction")
+      (j/execute! conn
+                  [(str "insert into " table " (id, sk, val)"
+                        " values (?, ?, ?)")
+                   k k e])
+      (when txn? (.releaseSavepoint conn savepoint))
+      true
+      ; TODO: figure out what error DuckDB uses for this
+      #_(catch org.postgresql.util.PSQLException e
+          (if (re-find #"duplicate key value" (.getMessage e))
+            (do (info (if txn? "txn") "insert failed: " (.getMessage e))
+                (when txn? (.releaseSavepoint conn savepoint))
+                false)
+            (throw e))))))
 
 (defn update!
   "Performs an update of a key k, adding element e. Returns true if the update
@@ -190,6 +221,19 @@
                             :element  v})))
              v))]))
 
+(defmacro with-transaction
+  "I'm not sure if DuckDB actually respects j/with-txn, so let's try rolling
+  our own just to be sure."
+  [[conn-name conn] & body]
+  `(let [~conn-name ~conn]
+     (try (j/execute! ~conn-name ["BEGIN TRANSACTION"])
+          (let [res# ~@body]
+            (j/execute! ~conn-name ["COMMIT"])
+            res#)
+          (catch Throwable t#
+            (j/execute! ~conn-name ["ABORT"])
+            (throw t#)))))
+
 (defn append-txn!
   "Takes a list-append transaction and applies it, returning a completed
   transaction, or throwing. Options are:
@@ -198,11 +242,11 @@
   [conn txn opts]
   (with-errors
     (let [use-txn?  (< 1 (count txn))
+          _         (info "Using txn")
           txn'      (if use-txn?
-                      ;(if true
-                      (j/with-transaction [t conn
-                                           ; Client doesn't support this yet
-                                           #_{:isolation (:isolation opts)}]
+                      (with-transaction [t conn
+                                         ; Client doesn't support this yet
+                                         #_{:isolation (:isolation opts)}]
                         (mapv (partial mop! t opts true) txn))
                       (mapv (partial mop! conn opts false) txn))]
       txn')))
@@ -212,22 +256,28 @@
 (defn setup!
   "Sets up the DB connection on initial startup."
   [conn opts]
-  (info "Setting up tables...")
-  (j/with-transaction [t conn
-                       ; Client doesn't support this yet
-                       #_{:isolation (:isolation opts)}]
-    (dotimes [i (:table-count opts default-table-count)]
-      (j/execute! conn
-                  [(str "create table if not exists " (table-name i)
-                        " (id int not null primary key,
-                        sk int not null,
-                        val text)")]))))
+  (with-logging opts [conn conn]
+    (info "Setting up tables...")
+    (j/with-transaction [t conn
+                         ; Client doesn't support this yet
+                         #_{:isolation (:isolation opts)}]
+      (dotimes [i (:table-count opts default-table-count)]
+        (j/execute! conn
+                    [(str "create table if not exists " (table-name i)
+                          " (id int not null primary key,
+                          sk int not null,
+                          val text)")])))))
 
 (defn handle*
   "Takes a deserialized request body and processes it, returning an
   unserialized response body."
   [conn body opts]
-  (append-txn! conn body opts))
+  (with-conn [conn conn]
+    (with-logging opts [conn conn]
+      (when (:log-sql opts) (info "request:" (pr-str body)))
+      (let [res (append-txn! conn body opts)]
+        (when (:log-sql opts) (info "response:" (pr-str res)))
+        res))))
 
 (defn handler
   "Returns a function that handles HTTP requests."
@@ -240,21 +290,22 @@
                              (BufferedReader.
                                (InputStreamReader. (:body req) "UTF-8"))))
             res (handle* conn body opts)]
-        {:status 200
+        {:status  200
          :headers {"Content-Type" "application/edn"}
          :body    (pr-str res)})
 
-      (catch [:type :conflict] _
-        {:status 409
+      ; Definite exceptions
+      (catch :definite? e
+        {:status  409
          :headers {"Content-Type" "application/edn"}
-         :body    ":conflict"})
+         :body    (pr-str (:type e))})
 
-      ; RuntimeExceptions we send back to the client and swallow
-      (catch RuntimeException e
+      ; Other exceptions are a 503
+      (catch Exception e
         (warn e "Exception handling request")
-        {:status "503"
+        {:status  503
          :headers {"Content-Type" "application/edn"}
-         :body    (datafy e)})
+         :body    (pr-str (datafy e))})
 
       ; Other Throwables we log and explode
       (catch Throwable t
@@ -267,6 +318,7 @@
 
     {:db-file   \"/foo/duck.db\"
      :port      10002
+     :log-sql   true
      :isolation :repeatable-read
      :rw-mode   :ro
      :upsert    #{:on-conflict ...}}"
@@ -274,6 +326,7 @@
   (let [store-dir (System/getenv "JEPSEN_STORE_DIR")
         port      (parse-long (System/getenv "JEPSEN_PORT"))
         isolation (keyword (System/getenv "JEPSEN_ISOLATION"))
+        log-sql   (boolean (System/getenv "JEPSEN_LOG_SQL"))
         rw-mode   (keyword (System/getenv "JEPSEN_RW_MODE"))
         upsert    (set (map keyword
                             (str/split (or (System/getenv "JEPSEN_UPSERT") "")
@@ -289,6 +342,7 @@
     {:db-file   (str store-dir "/duck.db")
      :port      port
      :isolation isolation
+     :log-sql   log-sql
      :rw-mode   rw-mode
      :upsert    upsert}))
 
@@ -297,6 +351,9 @@
   variables:
 
   JEPSEN_PORT       The local HTTP port to bind
+
+  JEPSEN_LOG_SQL    Whether to log SQL statements. Optional; if set to
+                    anything, logs.
 
   JEPSEN_ISOLATION  e.g. serializable, repeatable-read, etc. Presently ignored;
                     DuckDB will throw if you try to set it.
@@ -309,6 +366,7 @@
   (try
     (let [opts (read-opts)
           conn (open opts)]
+      (info "Options are:\n" (with-out-str (pprint opts)))
       (setup! conn opts)
       (http/run-server (handler conn opts) (select-keys opts [:port]))
       (info "Waiting for HTTP requests on port" (:port opts))

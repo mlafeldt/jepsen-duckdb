@@ -25,6 +25,7 @@
                             :socket-timeout     5000
                             :connection-timeout 1000})
             txn' (edn/read-string (:body res))]
+        (assert (= 200 (:status res)))
         (assoc op :type :ok, :value txn'))
       (catch java.net.ConnectException _
         (assoc op :type :fail, :error :conn-refused))

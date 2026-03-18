@@ -86,8 +86,10 @@
   [opts]
   (let [; Base arguments
         args ["-jar" (.getCanonicalPath (io/file local-dir "local-node.jar"))]
-        env  {"JEPSEN_ISOLATION" (:isolation opts)
-              "JEPSEN_UPSERT" "on-conflict"}
+        env  (cond-> {"JEPSEN_ISOLATION" (:isolation opts)
+                      "JEPSEN_UPSERT" "on-conflict"}
+               (:log-sql opts)
+               (assoc "JEPSEN_LOG_SQL" "TRUE"))
         primary-env (assoc env "JEPSEN_RW_MODE" "rw")
         secondary-env (assoc env "JEPSEN_RW_MODE" "ro")]
       (local/db {:bin "/usr/bin/java"
@@ -163,20 +165,7 @@
     :parse-fn parse-long
     :validate [pos? "Must be a positive integer"]]
 
-   [nil "--nemesis FAULTS" "A comma-separated list of nemesis faults to enable"
-    :parse-fn parse-nemesis-spec
-    :validate [(partial every? #{:pause :kill})
-               "Faults must be pause, kill, or the special faults all or none."]]
-
-   (cli/repeated-opt "-n" "--node HOSTNAME"
-     "Node(s) to run test on. Flag may be submitted many times, with one node per flag."
-     ; Ah, so the only two options are single rw, or multiple ro servers--they
-     ; use flock to prevent ro clients from opening a DB while a writer has it
-     ; open. Maybe down the road we look at mixing these clients by killing the
-     ; rw node, opening multiple ros, trying to get them to fight over fctrl by
-     ; repeatedly killing and restarting, etc....
-     ["l1"])
-     ;["l1" "l2" "l3"])
+   [nil "--log-sql" "If set, logs SQL statements on each local node."]
 
    [nil "--max-txn-length NUM" "Maximum number of operations in a transaction."
     :default  4
@@ -188,10 +177,25 @@
     :parse-fn parse-long
     :validate [pos? "Must be a positive integer."]]
 
+   [nil "--nemesis FAULTS" "A comma-separated list of nemesis faults to enable"
+    :parse-fn parse-nemesis-spec
+    :validate [(partial every? #{:pause :kill})
+               "Faults must be pause, kill, or the special faults all or none."]]
+
    [nil "--nemesis-interval SECS" "Roughly how long between nemesis operations."
     :default  20
     :parse-fn read-string
     :validate [pos? "Must be a positive number."]]
+
+   (cli/repeated-opt "-n" "--node HOSTNAME"
+     "Node(s) to run test on. Flag may be submitted many times, with one node per flag."
+     ; Ah, so the only two options are single rw, or multiple ro servers--they
+     ; use flock to prevent ro clients from opening a DB while a writer has it
+     ; open. Maybe down the road we look at mixing these clients by killing the
+     ; rw node, opening multiple ros, trying to get them to fight over fctrl by
+     ; repeatedly killing and restarting, etc....
+     ["l1"])
+     ;["l1" "l2" "l3"])
 
    ["-r" "--rate HZ" "Approximate request rate, in hz"
     :default  1000
