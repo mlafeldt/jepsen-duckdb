@@ -192,6 +192,18 @@
           " = ?")
      k k e e k]))
 
+(defn append-using-merge-into!
+  "Appends an element to a key using a MERGE INTO statement."
+  [conn opts table k e]
+  (j/execute!
+    conn
+    [(str "merge into " table " as t "
+          "using ( select ? as id, ? as sk, ? as val) as upserts "
+          "using (id) "
+          "when matched then update set "
+          "val = CONCAT(t.val, ',', ?) "
+          "when not matched then insert")
+     k k e e]))
 
 (defn insert!
   "Performs an initial insert of a key with initial element e. Catches
@@ -265,6 +277,9 @@
            :append
            (let [vs (str v)]
              (case (rand-nth (:upsert opts))
+               :merge-into
+               (append-using-merge-into! conn opts table k vs)
+
                :on-conflict
                (append-using-on-conflict! conn opts table k vs)
 
@@ -407,7 +422,9 @@
               :read-committed
               :read-uncommitted} isolation)
     (assert #{:ro :rw} rw-mode)
-    (assert (every? #{:on-conflict :update-insert} upsert))
+    (assert (every? #{:on-conflict
+                      :update-insert
+                      :merge-into} upsert))
     {:db-file   (str store-dir "/duck.db")
      :port      port
      :isolation isolation

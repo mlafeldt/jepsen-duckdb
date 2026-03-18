@@ -56,6 +56,10 @@
   (->> (parse-comma-separated-kws spec)
        (mapcat #(get special-nemeses % [%]))))
 
+(def upsert-tactics
+  "The ways we can do upserts."
+  #{:on-conflict :update-insert :merge-into})
+
 (def short-isolation
   {:strict-serializable "Strict-1SR"
    :serializable        "S"
@@ -209,12 +213,12 @@
     :validate [pos? "Must be a positive number."]]
 
    [nil "--upsert TACTICS" "Comma-separated list of tactics to use for upserting values."
-    :default [:on-conflict :update-insert]
+    :default upsert-tactics
     :parse-fn parse-comma-separated-kws
     :validate [(fn [tactics]
                  (and (not (empty? tactics))
-                      (every? #{:on-conflict :update-insert} tactics)))
-               "Tactics must be either on-conflict or update-insert."]]
+                      (every? upsert-tactics tactics)))
+               (cli/one-of upsert-tactics)]]
 
    ["-w" "--workload NAME" "What workload should we run?"
     :parse-fn keyword
