@@ -96,7 +96,8 @@
   [opts]
   (let [; Base arguments
         args ["-jar" (.getCanonicalPath (io/file local-dir "local-node.jar"))]
-        env  (cond-> {"JEPSEN_ISOLATION" (:isolation opts)
+        env  (cond-> {"JEPSEN_OPTS" (pr-str opts)
+                      "JEPSEN_ISOLATION" (:isolation opts)
                       "JEPSEN_UPSERT" (str/join "," (map name (:upsert opts)))}
                (:log-sql opts)
                (assoc "JEPSEN_LOG_SQL" "TRUE"))
@@ -156,6 +157,10 @@
     :default  "3n"
     :validate [(partial re-find #"^\d+n?$")
                "Must be an integer, optionally followed by n."]]
+
+   [nil "--disable-index-scan" "If set, disables index scans at local node startup."]
+
+   [nil "--disable-optimizer" "If set, disables the DuckDB optimizer via a pragma."]
 
    [nil "--expected-consistency-model MODEL" "What level of isolation do we *expect* to observe? Defaults to the same as --isolation."
     :default nil

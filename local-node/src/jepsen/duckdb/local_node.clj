@@ -335,6 +335,14 @@
   "Sets up the DB connection on initial startup."
   [conn opts]
   (with-logging opts [conn conn]
+    (when (:disable-index-scan opts)
+      (info "Disabling index scans")
+      (j/execute! conn ["SET index_scan_percentage=0"])
+      (j/execute! conn ["SET index_scan_max_count=0"]))
+    (when (:disable-optimizer opts)
+      (info "Disabling optimizer")
+      (j/execute! conn ["PRAGMA disable_optimizer"]))
+
     (info "Setting up tables...")
     (j/with-transaction [t conn
                          ; Client doesn't support this yet
@@ -405,49 +413,35 @@
      :port      10002
      :log-sql   true
      :isolation :repeatable-read
-     :rw-mode   :ro
-     :upsert    #{:on-conflict ...}}"
+     ...}
+
+  TODO: validate this structure! I'm on a tight schedule here, sorry!"
   []
   (let [store-dir (System/getenv "JEPSEN_STORE_DIR")
         port      (parse-long (System/getenv "JEPSEN_PORT"))
-        isolation (keyword (System/getenv "JEPSEN_ISOLATION"))
-        log-sql   (boolean (System/getenv "JEPSEN_LOG_SQL"))
         rw-mode   (keyword (System/getenv "JEPSEN_RW_MODE"))
-        upsert    (parse-comma-separated-kws
-                    (or (System/getenv "JEPSEN_UPSERT") ""))]
+        opts      (edn/read-string (System/getenv "JEPSEN_OPTS"))]
     (assert (and (string? store-dir) (not= "" store-dir)))
+    (assert (#{:ro :rw} rw-mode))
     (assert (pos? port))
-    (assert #{:serializable
-              :repeatable-read
-              :read-committed
-              :read-uncommitted} isolation)
-    (assert #{:ro :rw} rw-mode)
-    (assert (every? #{:on-conflict
-                      :update-insert
-                      :merge-into} upsert))
-    {:db-file   (str store-dir "/duck.db")
-     :port      port
-     :isolation isolation
-     :log-sql   log-sql
-     :rw-mode   rw-mode
-     :upsert    upsert}))
+    (merge opts
+           {:db-file   (str store-dir "/duck.db")
+            :rw-mode   rw-mode
+            :port      port})))
 
 (defn -main
   "Main entrypoint. All behavior is taken from the following environment
   variables:
 
+  JEPSEN_STORE_DIR  The directory where we should store duck.db etc.
+
   JEPSEN_PORT       The local HTTP port to bind
 
-  JEPSEN_LOG_SQL    Whether to log SQL statements. Optional; if set to
-                    anything, logs.
+  JEPSEN_RW_MODE    Whether to connect in read-write or read-only mode
 
-  JEPSEN_ISOLATION  e.g. serializable, repeatable-read, etc. Presently ignored;
-                    DuckDB will throw if you try to set it.
-
-  JEPSEN_RW_MODE    Either rw (read-write) or ro (read-only)
-
-  JEPSEN_UPSERT     A comma-separated list of tactics we use for upserting,
-                    like \"on-conflict,update-insert\"; see mop! for details."
+  JEPSEN_OPTS       An EDN map of CLI options from the test harness. We do this
+                    to avoid plumbing every single option through separately.
+                    See jepsen.duckdb.cli for what options exist."
   []
   (try
     (let [opts (read-opts)
