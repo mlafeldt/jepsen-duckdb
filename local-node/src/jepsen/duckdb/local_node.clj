@@ -35,11 +35,15 @@
       (info "Disabling index scans")
       (j/execute! conn ["SET index_scan_percentage=0"])
       (j/execute! conn ["SET index_scan_max_count=0"]))
+
     (when (:disable-optimizer opts)
       (info "Disabling optimizer")
       (j/execute! conn ["PRAGMA disable_optimizer"]))
 
-    (info "Setting up tables...")
+    (when-let [b (:checkpoint-threshold opts)]
+      (info "Setting checkpoint_threshold =" b "bytes")
+      (j/execute! conn [(str "SET checkpoint_threshold='" b " bytes'")]))
+
     (append/create-tables! conn opts)))
 
 (def logs-written? (atom false))

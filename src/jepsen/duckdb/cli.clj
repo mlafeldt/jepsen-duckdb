@@ -157,7 +157,10 @@
 
 (def cli-opts
   "Command line options"
-  [
+  [[nil "--checkpoint-threshold BYTES" "Sets the checkpoint threshold. Try 0 to force frequent auto-checkpointing."
+    :parse-fn parse-long
+    :validate [(complement neg?) "Must be non-negative"]]
+
    [nil "--concurrency NUMBER" "How many workers should we run? Must be an integer, optionally followed by n (e.g. 3n) to multiply by the number of nodes."
     :default  "3n"
     :validate [(partial re-find #"^\d+n?$")
