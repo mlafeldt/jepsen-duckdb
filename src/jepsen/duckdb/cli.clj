@@ -169,7 +169,7 @@
     :parse-fn keyword]
 
    ["-i" "--isolation LEVEL" "What level of isolation we should set: serializable, repeatable-read, etc."
-    :default :serializable
+    :default :strong-snapshot-isolation
     :parse-fn keyword
     :validate [#{:read-uncommitted
                  :read-committed
@@ -220,7 +220,7 @@
     :validate [pos? "Must be a positive number."]]
 
    [nil "--upsert TACTICS" "Comma-separated list of tactics to use for upserting values."
-    :default (vec upsert-tactics)
+    :default [:merge-into :on-conflict]
     :parse-fn parse-comma-separated-kws
     :validate [(fn [tactics]
                  (and (not (empty? tactics))
