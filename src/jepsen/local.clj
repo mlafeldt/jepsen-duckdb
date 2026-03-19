@@ -121,7 +121,8 @@
       (locking state
         (if-let [s @state]
           (do (kill-process! s)
-              (reset! state nil))
+              (reset! state nil)
+              :killed)
           :not-running))))
 
   (start! [this test node]
@@ -130,11 +131,12 @@
       (locking state
         (if @state
           :already-running
-          (reset! state (start-process! test
+          (do (reset! state (start-process! test
                                         {:node node
                                          :bin  bin
                                          :args (get node-args node)
-                                         :env  (get node-envs node)}))))))
+                                         :env  (get node-envs node)}))
+              :started)))))
 
   db/DB
   (setup! [this test node]

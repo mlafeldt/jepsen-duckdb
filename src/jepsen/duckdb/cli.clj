@@ -10,14 +10,12 @@
                     [db :as db]
                     [generator :as gen]
                     [local :as local]
-                    [nemesis :as nemesis]
                     [os :as os]
                     [tests :as tests]
                     [util :as util :refer [sh]]]
             [jepsen.checker.timeline :as timeline]
-            [jepsen.nemesis.combined :as nc]
-            [jepsen.duckdb [append :as append]]
-            ))
+            [jepsen.duckdb [append :as append]
+                           [nemesis :as nemesis]]))
 
 (def workloads
   "A map of workload names to functions that take CLI options and return
@@ -27,20 +25,18 @@
 
 (def all-workloads
   "A collection of workloads we run by default."
-  [;:append
-   ])
+  [:append])
 
 (def all-nemeses
   "Combinations of nemeses for tests"
   [[]
-   ;[:pause]
+   [:kill]
    ])
 
 (def special-nemeses
   "A map of special nemesis names to collections of faults"
   {:none []
-   ;:all [:pause :kill :partition :clock]})
-   :all  []})
+   :all  [:kill]})
 
 (defn parse-comma-separated-kws
   "Takes a string of comma-separated values and turns it into a vector of
@@ -50,15 +46,16 @@
        (mapv keyword)))
 
 (defn parse-nemesis-spec
-  "Takes a comma-separated nemesis string and returns a collection of keyword
+  "Takes a comma-separated nemesis string and returns a set of keyword
   faults."
   [spec]
   (->> (parse-comma-separated-kws spec)
-       (mapcat #(get special-nemeses % [%]))))
+       (mapcat #(get special-nemeses % [%]))
+       set))
 
 (def upsert-tactics
   "The ways we can do upserts."
-  #{:on-conflict :update-insert :merge-into})
+  #{:on-conflict :merge-into})
 
 (def list-types
   "How can we encode lists for append?"
@@ -100,12 +97,12 @@
   [opts]
   (let [; Base arguments
         args ["-jar" (.getCanonicalPath (io/file local-dir "local-node.jar"))]
-        env  (cond-> {"JEPSEN_OPTS" (pr-str opts)
-                      "JEPSEN_ISOLATION" (:isolation opts)
-                      "JEPSEN_UPSERT" (str/join "," (map name (:upsert opts)))}
-               (:log-sql opts)
-               (assoc "JEPSEN_LOG_SQL" "TRUE"))
-        primary-env (assoc env "JEPSEN_RW_MODE" "rw")
+        ; We don't need to do this, but it's slightly easier to read a smaller
+        ; map in the logging output, so we'll dissoc some keys that we *know*
+        ; don't need to get passed through.
+        env-opts (dissoc opts :max-txn-length :rate :concurrency :key-count :max-writes-per-key :expected-consistency-model :leave-db-running? :logging-json? :nemesis-interval :ssh :time-limit :argv :nemesis :test-count)
+        env           {"JEPSEN_OPTS" (pr-str env-opts)}
+        primary-env   (assoc env "JEPSEN_RW_MODE" "rw")
         secondary-env (assoc env "JEPSEN_RW_MODE" "ro")]
       (local/db {:bin "/usr/bin/java"
                  :node-args (zipmap (:nodes opts) (repeat args))
@@ -120,15 +117,12 @@
   (let [workload-name (:workload opts :append)
         workload ((workloads workload-name) opts)
         db       (db opts)
-        nemesis  nil
-        ;nemesis (nc/nemesis-package
-        ;    {:db db
-        ;     :nodes (:nodes opts)
-        ;     :faults (:nemesis opts)
-        ;     :partition {:targets [:one :majority :majorities-ring]}
-        ;     :pause {:targets [:one :majority :all]}
-        ;     :kill  {:targets [:one :majority :all]}
-        ;     :interval (:nemesis-interval opts)})
+        nemesis (nemesis/package
+                  {:db       db
+                   :nodes    (:nodes opts)
+                   :faults   (:nemesis opts)
+                   :kill     {:targets [:one :majority :all]}
+                   :interval (:nemesis-interval opts)})
         gen (->> (:generator workload)
                  (gen/stagger (/ (:rate opts)))
                  (gen/nemesis (:generator nemesis))
@@ -151,7 +145,7 @@
                        ;:timeline   (timeline/html)
                        :workload   (:checker workload)})
            :client    (:client workload)
-           :nemesis   (:nemesis nemesis nemesis/noop)
+           :nemesis   (:nemesis nemesis)
            :generator gen})
         local/test)))
 
@@ -213,7 +207,7 @@
                "Faults must be pause, kill, or the special faults all or none."]]
 
    [nil "--nemesis-interval SECS" "Roughly how long between nemesis operations."
-    :default  20
+    :default  5
     :parse-fn read-string
     :validate [pos? "Must be a positive number."]]
 

@@ -7,7 +7,10 @@
             [elle.core :as elle]
             [jepsen [client :as client]
                     [local :as local]]
-            [jepsen.tests.cycle.append :as append]))
+            [jepsen.tests.cycle.append :as append])
+  (:import (java.net ConnectException
+                     SocketException)
+           (org.apache.http NoHttpResponseException)))
 
 ; Nothing fancy here; we proxy things straight over to the local node.
 (defrecord Client [port]
@@ -27,8 +30,12 @@
             txn' (edn/read-string (:body res))]
         (assert (= 200 (:status res)))
         (assoc op :type :ok, :value txn'))
-      (catch java.net.ConnectException _
+      (catch ConnectException _
         (assoc op :type :fail, :error :conn-refused))
+      (catch SocketException e
+        (assoc op :type :info, :error [:socket (.getMessage e)]))
+      (catch NoHttpResponseException _
+        (assoc op :type :info, :error :no-response))
       (catch [:status 409] _
         (assoc op :type :fail, :error :conflict))
       (catch [:status 500] e
@@ -37,9 +44,11 @@
         (assoc op :type :info, :error [:server-error (:body e)]))))
 
   (teardown! [this test]
-    (http/post (str "http://localhost:" port "/write-logs")
-               {:socket-timeout     5000
-                :connection-timeout 1000}))
+    (try (http/post (str "http://localhost:" port "/write-logs")
+                    {:socket-timeout     5000
+                     :connection-timeout 1000})
+         (catch Exception e
+           (warn e "Couldn't ask local node to write logs:"))))
 
   (close! [this test]))
 
