@@ -170,7 +170,6 @@
                               "id = ?")
                          k]
                         {:builder-fn rs/as-unqualified-lower-maps})]
-      (info :read k r)
       (when-let [r (:val_list (first r))]
         r))
 

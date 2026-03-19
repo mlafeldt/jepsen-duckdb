@@ -55,7 +55,7 @@
   "Raw form of open, which does not retry read-only opens when the file does
   not exist."
   [{:keys [db-file rw-mode]}]
-  (info "Opening" db-file)
+  ;(info "Opening" db-file)
   (let [; TODO: temp_directory?
         spec {:dbtype "duckdb"
               :dbname db-file
@@ -90,7 +90,7 @@
 (defn close!
   "Closes a connection"
   [^Connection conn]
-  (info "Closing DB connection")
+  ;(info "Closing DB connection")
   (.close conn))
 
 (defmacro with-conn-duplicate
@@ -107,7 +107,7 @@
     `(let [~conn-name (.duplicate ~conn)]
        (try ~@body
             (finally
-              (.close ~conn-name))))))
+              (close! ~conn-name))))))
 
 (defmacro with-conn-open
   "Multiple threads can use a DuckDB client concurrently, but they can't share
