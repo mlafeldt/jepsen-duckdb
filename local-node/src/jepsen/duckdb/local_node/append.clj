@@ -1,12 +1,14 @@
-(ns jepsen.duckdb.local-node.list-append
+(ns jepsen.duckdb.local-node.append
   "List-append transactions, encoded either a LIST or comma-separated TEXT
   field."
   (:gen-class)
+  (:refer-clojure :exclude [read])
   (:require [clj-commons.slingshot :refer [try+ throw+]]
             [clojure [pprint :refer [pprint]]
                      [string :as str]]
             [clojure.tools.logging :refer [info warn fatal]]
             [dom-top.core :refer [loopr with-retry]]
+            [jepsen.random :as rand]
             [jepsen.duckdb.local-node [client :as c]]
             [next.jdbc :as j]
             [next.jdbc [protocols :as jp]
@@ -21,7 +23,7 @@
 (defn table-name
   "Takes an integer and constructs a table name."
   [i]
-  (str "txn" i))
+  (str "append" i))
 
 (defn create-tables!
   "Creates the tables used for this workload."
@@ -34,41 +36,75 @@
       (j/execute! conn
                   [(str "create table if not exists " (table-name i)
                         " (id int not null primary key,
-                        sk int not null,
-                        val text)")]))))
+                           sk int not null,
+                           val_text text,
+                           val_list INTEGER[])")]))))
 
 (defn table-for
   "What table should we use for the given key?"
   [table-count k]
   (table-name (mod (hash k) table-count)))
 
+(defn list-type
+  "Takes options map and a key; returns the keyword list type (e.g. :text or
+  :list) used for this key."
+  [opts k]
+  (let [ts (:list-types opts)]
+    (nth ts (mod (hash k) (count ts)))))
+
+(def val-column
+  "A map of list types to columns used to encode them."
+  {:list "val_list"
+   :text "val_text"})
+
 (defn append-using-on-conflict!
   "Appends an element to a key using an INSERT ... ON CONFLICT statement."
   [conn opts table k e]
-  (j/execute!
-    conn
-    [(str "insert into " table " as t"
-          " (id, sk, val) values (?, ?, ?)"
-          " on conflict (id) do update set"
-          " val = CONCAT(t.val, ',', ?) where "
-          "t.id"
-          ; TODO: secondary keys
-          ;(if (< (rand) 0.5) "t.id" "t.sk")
-          " = ?")
-     k k e e k]))
+  ; TODO: secondary keys
+  (case (list-type opts k)
+    :list
+    (j/execute!
+      conn
+      [(str "insert into " table " as t "
+            "(id, sk, val_list) values (?, ?, [?]::INTEGER[]) "
+            "on conflict (id) do update "
+            "set val_list = list_append(t.val_list, ?) "
+            "where t.id = ?")
+       k k e e k])
+    :text
+    (j/execute!
+      conn
+      [(str "insert into " table " as t"
+            " (id, sk, val_text) values (?, ?, ?)"
+            " on conflict (id) do update "
+            "set val_text = CONCAT(t.val_text, ',', ?) "
+            "where t.id = ?")
+       k k (str e) (str e) k])))
 
 (defn append-using-merge-into!
   "Appends an element to a key using a MERGE INTO statement."
   [conn opts table k e]
-  (j/execute!
-    conn
-    [(str "merge into " table " as t "
-          "using ( select ? as id, ? as sk, ? as val) as upserts "
-          "using (id) "
-          "when matched then update set "
-          "val = CONCAT(t.val, ',', ?) "
-          "when not matched then insert")
-     k k e e]))
+  (case (list-type opts k)
+    :list
+    (j/execute!
+      conn
+      [(str "merge into " table " as t "
+            "using (select ? as id, ? as sk, NULL as val_text, [?]::INTEGER[] as val_list) "
+            "using (id) "
+            "when matched then update set "
+            "val_list = list_append(t.val_list, ?) "
+            "when not matched then insert")
+       k k e e])
+    :text
+    (j/execute!
+      conn
+      [(str "merge into " table " as t "
+            "using (select ? as id, ? as sk, ? as val_text, NULL as val_list) as upserts "
+            "using (id) "
+            "when matched then update set "
+            "val_text = CONCAT(t.val_text, ',', ?) "
+            "when not matched then insert")
+       k k (str e) (str e)])))
 
 (defn insert!
   "Performs an initial insert of a key with initial element e. Catches
@@ -78,13 +114,15 @@
   roll back to it on failure."
   [^Connection conn opts txn? table k e]
   ; TODO: DuckDB complains about our SQL when we do a savepoint, so this breaks
+  ; TODO: since this doesn't work, I'm not teaching it about val_text/val_list
+  ; yet
   (let [savepoint (when txn? (c/set-savepoint! conn "upsert"))]
     (try
       ;(info (if txn? "" "not") "in transaction")
       (j/execute! conn
                   [(str "insert into " table " (id, sk, val)"
                         " values (?, ?, ?)")
-                   k k e])
+                   k k (str e)])
       (when txn? (c/release-savepoint! conn savepoint))
       true
       (catch SQLException e
@@ -100,7 +138,7 @@
   [conn opts table k e]
   (let [res (-> conn
                 (j/execute-one! [(str "update " table " set val = CONCAT(val, ',', ?)"
-                                      " where id = ?") e k]))]
+                                      " where id = ?") (str e) k]))]
     ;(info :update res)
     (-> res
         :next.jdbc/update-count
@@ -121,36 +159,55 @@
                :key       k
                :element   e})))
 
+(defn read
+  "Reads a key's value."
+  [conn opts table k]
+  (case (list-type opts k)
+    :list
+    (let [r (j/execute! conn
+                        [(str "select (val_list) from " table " where "
+                              ;(if (< (rand) 0.5) "id" "sk")
+                              "id = ?")
+                         k]
+                        {:builder-fn rs/as-unqualified-lower-maps})]
+      (info :read k r)
+      (when-let [r (:val_list (first r))]
+        r))
+
+    :text
+    (let [r (j/execute! conn
+                        [(str "select (val_text) from " table " where "
+                              ;(if (< (rand) 0.5) "id" "sk")
+                              "id"
+                              " = ?")
+                         k]
+                        {:builder-fn rs/as-unqualified-lower-maps})]
+      (when-let [v (:val_text (first r))]
+        (mapv parse-long (str/split v #","))))))
+
 (defn mop!
   "Executes a transactional micro-op on a connection. Returns the completed
   micro-op."
   [conn opts txn? [f k v]]
   (let [table-count (:table-count opts default-table-count)
         table (table-for table-count k)]
-    (Thread/sleep (long (rand-int 10)))
+    ; We deliberately inject some latency here to force longer windows of
+    ; transactions overlapping.
+    (Thread/sleep (long (rand/long 10)))
     [f k (case f
-           :r (let [r (j/execute! conn
-                                  [(str "select (val) from " table " where "
-                                        ;(if (< (rand) 0.5) "id" "sk")
-                                        "id"
-                                        " = ? ")
-                                   k]
-                                  {:builder-fn rs/as-unqualified-lower-maps})]
-                (when-let [v (:val (first r))]
-                  (mapv parse-long (str/split v #","))))
+           :r (read conn opts table k)
 
            :append
-           (let [vs (str v)]
-             (case (rand-nth (:upsert opts))
-               :merge-into
-               (append-using-merge-into! conn opts table k vs)
+           (do (case (rand-nth (:upsert opts))
+                 :merge-into
+                 (append-using-merge-into! conn opts table k v)
 
-               :on-conflict
-               (append-using-on-conflict! conn opts table k vs)
+                 :on-conflict
+                 (append-using-on-conflict! conn opts table k v)
 
-               :update-insert
-               (append-using-update-insert! conn opts txn? table k vs))
-             v))]))
+                 :update-insert
+                 (append-using-update-insert! conn opts txn? table k v))
+               v))]))
 
 (defn txn!
   "Takes a list-append transaction structure [[f k v] ...] and applies it,

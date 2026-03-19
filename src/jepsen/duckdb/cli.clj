@@ -60,6 +60,10 @@
   "The ways we can do upserts."
   #{:on-conflict :update-insert :merge-into})
 
+(def list-types
+  "How can we encode lists for append?"
+  #{:text :list})
+
 (def short-isolation
   {:strict-serializable "Strict-1SR"
    :serializable        "S"
@@ -153,7 +157,8 @@
 
 (def cli-opts
   "Command line options"
-  [[nil "--concurrency NUMBER" "How many workers should we run? Must be an integer, optionally followed by n (e.g. 3n) to multiply by the number of nodes."
+  [
+   [nil "--concurrency NUMBER" "How many workers should we run? Must be an integer, optionally followed by n (e.g. 3n) to multiply by the number of nodes."
     :default  "3n"
     :validate [(partial re-find #"^\d+n?$")
                "Must be an integer, optionally followed by n."]]
@@ -181,6 +186,11 @@
     :default  10
     :parse-fn parse-long
     :validate [pos? "Must be a positive integer"]]
+
+   [nil "--list-types TYPES" "A comma-separated list of column types to use for append."
+    :default  (vec list-types)
+    :parse-fn parse-comma-separated-kws
+    :validate [(partial every? list-types) (cli/one-of list-types)]]
 
    [nil "--log-sql" "If set, logs SQL statements on each local node."]
 

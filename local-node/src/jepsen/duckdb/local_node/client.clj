@@ -13,6 +13,15 @@
   (:import (java.sql Connection
                      SQLException)))
 
+;; Read SQL arrays as vectors
+(extend-protocol rs/ReadableColumn
+  java.sql.Array
+  (read-column-by-label [^java.sql.Array a _]
+    (vec (.getArray a)))
+
+  (read-column-by-index [^java.sql.Array a _2 _3]
+    (vec (.getArray a))))
+
 ;; General SQL client stuff
 
 (defmacro with-logging
@@ -125,9 +134,14 @@
   `(try ~@body
         (catch SQLException e#
           (condp re-find (.getMessage e#)
-            #"Conflict on update!" (throw+ {:type :conflict, :definite? true})
+            #"Conflict on tuple deletion!"
+            (throw+ {:type :conflict, :definite? true})
 
-            #"[Dd]uplicate key" (throw+ {:type :duplicate-key, :definite? true})
+            #"Conflict on update!"
+            (throw+ {:type :conflict, :definite? true})
+
+            #"[Dd]uplicate key"
+            (throw+ {:type :duplicate-key, :definite? true})
 
             (throw e#)))))
 

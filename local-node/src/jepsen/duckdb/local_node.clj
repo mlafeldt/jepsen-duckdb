@@ -9,7 +9,7 @@
             [clojure.tools.logging :refer [info warn fatal]]
             [dom-top.core :refer [loopr with-retry]]
             [jepsen.duckdb.local-node [client :as c]
-                                      [list-append :as list-append]]
+                                      [append :as append]]
             [next.jdbc :as j]
             [next.jdbc [protocols :as jp]
                        [result-set :as rs]]
@@ -40,7 +40,7 @@
       (j/execute! conn ["PRAGMA disable_optimizer"]))
 
     (info "Setting up tables...")
-    (list-append/create-tables! conn opts)))
+    (append/create-tables! conn opts)))
 
 (def logs-written? (atom false))
 
@@ -67,7 +67,7 @@
       (let [{:keys [body uri]} req
             _ (when (:log-sql opts) (info "request:" uri (pr-str body)))
             res (case uri
-                  "/append"     (list-append/txn! conn body opts)
+                  "/append"     (append/txn! conn body opts)
                   "/write-logs" (write-logs! conn opts))]
         (when (:log-sql opts) (info "response:" uri (pr-str res)))
         res))))
