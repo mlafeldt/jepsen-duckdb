@@ -220,7 +220,7 @@
     :validate [pos? "Must be a positive number."]]
 
    [nil "--upsert TACTICS" "Comma-separated list of tactics to use for upserting values."
-    :default upsert-tactics
+    :default (vec upsert-tactics)
     :parse-fn parse-comma-separated-kws
     :validate [(fn [tactics]
                  (and (not (empty? tactics))
