@@ -62,11 +62,36 @@ available](https://github.com/jepsen-io/jepsen?tab=readme-ov-file#working-with-t
 The test harness lives in this directory; its project file is `project.clj`,
 its source lives in `src/`, and so on.
 
-Because we want to test what happens when you kill a process running DuckDB,
-the actual code that talks to the DuckDB library lives in a separate process,
-called a *local node*. The `local-node` directory is its own Clojure project,
-which the test harness automatically builds and runs. The harness communicates
-with one or more local nodes via HTTP.
+The test harness runs a separate program, the "local node", which embeds the
+DuckDB library and performs transactions against it. The test harness generates
+random transactions for a given workload, submits them over HTTP to the local
+node, and journals the results of those transactions, checking at the end for
+various transactional anomalies. We look for Strong Snapshot Isolation, using
+the Elle checker (https://github.com/jepsen-io/elle).
+
+The local node has a small HTTP server which receives abstract transactions
+(e.g. "read key x, then set y to 5") from the test harness, and translates them
+into transactions run against the DuckDB JDBC driver.
+
+We can inject one kind of fault: process kills.
+
+# Workloads
+
+We have two workloads.
+
+The first, *append*, runs transactions which append unique integers to lists,
+and reads the contents of those lists. Each list lives in a single row, spread
+across several tables. Lists are identified by primary key or an unindexed
+secondary key. Lists are encoded either as text fields or as DuckDB INTEGER{]
+lists. Mutation is done either with INSERT ON CONFLICT UPDATE or MERGE INTO.
+
+The second, *fkey-register*, performs reads and writes of integer registers. In
+DuckDB, we store those registers in two tables. A *logical* table maps keys to
+physical IDS, with a foreign key. A *physical* table maps physical IDs to
+values. We use a straightforward JOIN between the two to read. Writes are
+performed either by updating the physical row, or by creating a new physical
+row and altering the logical pointer to it. I just got this workload to turn on
+today; it runs, but it's not polished yet.
 
 ## License
 
