@@ -12,6 +12,12 @@ You'll need a JDK (21+), Git, Gnuplot, Graphviz, plus
 [Leiningen](https://leiningen.org/). Unlike most Jepsen tests this runs
 entirely locally; you don't need a cluster of machines, SSH keys, etc.
 
+### Debian
+
+```
+sudo apt install openjdk leiningen gnuplot graphviz
+```
+
 ### OS X
 
 ```
