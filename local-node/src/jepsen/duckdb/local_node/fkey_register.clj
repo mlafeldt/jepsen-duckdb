@@ -70,7 +70,7 @@
     ; And update that row
     (j/execute-one! conn
                     [(str "UPDATE physical SET val = ? WHERE id = ?")
-                     v k])
+                     v physical-id])
     ; Doesn't exist; create both rows. Either of these paths contends on the
     ; logical key, so transactions should conflict under SI.
     (let [physical-id
@@ -89,7 +89,7 @@
   completed micro-op."
   [conn opts [f k v]]
   ; Deliberately inject latency to force longer windows of concurrency.
-  (Thread/sleep (long (rand/long 10)))
+  ;(Thread/sleep (long (rand/long 10)))
   [f k (case f
          :r (read conn k)
          :w (do (write-physical! conn opts k v)
