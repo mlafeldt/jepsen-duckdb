@@ -12,6 +12,12 @@ You'll need a JDK (21+), Git, Gnuplot, Graphviz, plus
 [Leiningen](https://leiningen.org/). Unlike most Jepsen tests this runs
 entirely locally; you don't need a cluster of machines, SSH keys, etc.
 
+### OS X
+
+```
+brew install openjdk leiningen gnuplot graphviz
+```
+
 ## Usage
 
 To run a test, try:
@@ -20,7 +26,18 @@ To run a test, try:
 lein run test
 ```
 
-Help for the various options is available through `lein run test --help`.
+DuckDB provides (I suspect) Strong SI by default, and that's what the test checks for. It does allow G2-item, though, which is a violation of Repeatable Read. To demonstrate this, try:
+
+```
+lein run test --time-limit 10 --expected-consistency-model serializable --max-writes-per-key 8
+```
+
+We're asking to test for ten seconds, to look for violations of
+Serializability, and (to generate small, readable examples), to write only 8
+elements per key. Examples of G2-item should be available in
+`store/latest/elle/G2-item`.
+
+There are several tuning options available. Help for the various options is available through `lein run test --help`.
 
 Test results are written to `store/<test-name>/<date>/`, and symlinked as
 `store/latest`. Each of these test directories is self-contained; you can copy
