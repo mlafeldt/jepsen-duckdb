@@ -1,7 +1,6 @@
 (ns jepsen.duckdb.local-node.append
   "List-append transactions, encoded either a LIST or comma-separated TEXT
   field."
-  (:gen-class)
   (:refer-clojure :exclude [read])
   (:require [clj-commons.slingshot :refer [try+ throw+]]
             [clojure [pprint :refer [pprint]]

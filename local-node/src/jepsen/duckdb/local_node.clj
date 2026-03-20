@@ -9,7 +9,8 @@
             [clojure.tools.logging :refer [info warn fatal]]
             [dom-top.core :refer [loopr with-retry]]
             [jepsen.duckdb.local-node [client :as c]
-                                      [append :as append]]
+                                      [append :as append]
+                                      [fkey-register :as fkey-register]]
             [next.jdbc :as j]
             [next.jdbc [protocols :as jp]
                        [result-set :as rs]]
@@ -44,7 +45,8 @@
       (info "Setting checkpoint_threshold =" b "bytes")
       (j/execute! conn [(str "SET checkpoint_threshold='" b " bytes'")]))
 
-    (append/create-tables! conn opts)))
+    (append/create-tables! conn opts)
+    (fkey-register/create-tables! conn opts)))
 
 (def logs-written? (atom false))
 
@@ -71,8 +73,9 @@
       (let [{:keys [body uri]} req
             _ (when (:log-sql opts) (info "request:" uri (pr-str body)))
             res (case uri
-                  "/append"     (append/txn! conn body opts)
-                  "/write-logs" (write-logs! conn opts))]
+                  "/append"        (append/txn!         conn body opts)
+                  "/fkey-register" (fkey-register/txn!  conn body opts)
+                  "/write-logs"    (write-logs! conn opts))]
         (when (:log-sql opts) (info "response:" uri (pr-str res)))
         res))))
 

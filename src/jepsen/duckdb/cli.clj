@@ -15,17 +15,20 @@
                     [util :as util :refer [sh]]]
             [jepsen.checker.timeline :as timeline]
             [jepsen.duckdb [append :as append]
+                           [fkey-register :as fkey-register]
                            [nemesis :as nemesis]]))
 
 (def workloads
   "A map of workload names to functions that take CLI options and return
   workload maps."
-  {:append append/workload
-   :none   (fn [_] tests/noop-test)})
+  {:append        append/workload
+   :fkey-register fkey-register/workload
+   :none          (fn [_] tests/noop-test)})
 
 (def all-workloads
   "A collection of workloads we run by default."
-  [:append])
+  [:append
+   :fkey-register])
 
 (def all-nemeses
   "Combinations of nemeses for tests"
