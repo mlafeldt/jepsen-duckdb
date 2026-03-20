@@ -13,11 +13,11 @@
                  [org.clj-commons/slingshot "0.13.0"]
                  [org.clojure/tools.logging "1.3.0"]
                  [io.jepsen/generator "0.1.1"]
-                 ; [org.duckdb/duckdb_jdbc "1.5.0.0"]
+                  [org.duckdb/duckdb_jdbc "1.5.0.0"]
                  ; Fixes a few known issues (not sure what exactly) in 1.5.0.0
                  ; [org.duckdb/duckdb_jdbc "1.5.1.0-7e03e76d-SNAPSHOT"]
                  ; Fixes the data corruption issue we found with strings!
-                 [org.duckdb/duckdb_jdbc "1.5.1.0-fb39e9db-SNAPSHOT"]
+                 ;[org.duckdb/duckdb_jdbc "1.5.1.0-fb39e9db-SNAPSHOT"]
                  [spootnik/unilog "0.7.32"]]
   :main jepsen.duckdb.local-node
   :repl-options {:init-ns jepsen.duckdb.local-node}

@@ -57,6 +57,16 @@
         {:builder-fn rs/as-unqualified-lower-maps})
       :val))
 
+(defn insert-physical!
+  "Inserts a fresh physical row, returning its logical ID."
+  [conn opts v]
+  (-> conn
+      (j/execute-one!
+        [(str "INSERT INTO physical (val) VALUES (?) "
+              "RETURNING id") v]
+        {:builder-fn rs/as-unqualified-lower-maps})
+      :id))
+
 (defn write-physical!
   "Writes a value by updating the physical row."
   [conn opts k v]
@@ -73,16 +83,17 @@
                      v physical-id])
     ; Doesn't exist; create both rows. Either of these paths contends on the
     ; logical key, so transactions should conflict under SI.
-    (let [physical-id
-          (-> conn
-              (j/execute-one!
-                [(str "INSERT INTO physical (val) VALUES (?) "
-                      "RETURNING id") v]
-                {:builder-fn rs/as-unqualified-lower-maps})
-              :id)]
-      (info :physical-id physical-id)
+    (let [physical-id (insert-physical! conn opts v)]
       (j/execute-one!
         conn [(str "INSERT INTO logical VALUES (?, ?)") k physical-id]))))
+
+(defn write-logical!
+  "Writes a value by creating a fresh physical row and pointing to it."
+  [conn opts k v]
+  (let [physical-id (insert-physical! conn opts v)]
+    (j/execute-one!
+      conn
+      [(str "INSERT OR REPLACE INTO logical VALUES (?, ?)") k physical-id])))
 
 (defn mop!
   "Executes a transaction's micro-operation on a connection. Returns the
@@ -92,7 +103,8 @@
   ;(Thread/sleep (long (rand/long 10)))
   [f k (case f
          :r (read conn k)
-         :w (do (write-physical! conn opts k v)
+         :w (do ((rand-nth [write-physical! write-logical!])
+                 conn opts k v)
                 v))])
 
 (defn txn!
