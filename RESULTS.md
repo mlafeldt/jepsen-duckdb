@@ -61,8 +61,8 @@ Results vary across runs:
   not complete cleanly — the artifacts were produced before the error, not
   as part of a verified result.
 
-The cause of the assertion error is unresolved — it may be a bug in Elle
-or in the test harness. The clean `:valid? false` runs already demonstrate
+The assertion error is caused by a string storage bug in DuckDB — see
+finding #3 below. The clean `:valid? false` runs already demonstrate
 non-serializability on their own; the assertion-error runs are inconclusive.
 
 When a clean `:valid? false` run does occur, anomaly details are in
@@ -97,7 +97,48 @@ node as a child process. No cluster, no SSH — everything is local.
 1. DuckDB's Strong SI claim holds — no anomalies when tested at that level
 2. DuckDB is not serializable — G2-item (write skew) has been observed, though
    some runs hit an Elle analysis error before completing
-3. High conflict rate (~50% txn failures) is normal under the test's contention level
+3. Testing surfaced a string storage bug: when reverting an append due to a
+   primary key conflict, the dictionary size was not decremented, causing
+   newly inserted strings to contain stale data. The test flags this with
+   "Assert failed: No transaction wrote \<id\> \<val\>". Present in 1.5.0
+   and 1.5.1; fix merged upstream after 1.5.1 and expected in the next
+   bugfix release via
+   [duckdb/duckdb#21489](https://github.com/duckdb/duckdb/pull/21489)
+4. High conflict rate (~50% txn failures) is normal under the test's contention level
+
+### Reproducing the string storage bug (#3)
+
+The bug triggers when `MERGE INTO` causes a primary key conflict and the
+string append is reverted without decrementing the dictionary size. Subsequent
+inserts into the same segment read corrupted string data, which Elle detects
+as values no transaction ever wrote.
+
+```bash
+docker compose run --rm jepsen run test \
+  --time-limit 10 \
+  --max-writes-per-key 8 \
+  --concurrency 5 \
+  --rate 1000 \
+  --log-sql \
+  --upsert merge-into \
+  --duckdb-log
+```
+
+Key flags: `--upsert merge-into` forces the MERGE INTO code path (where the
+bug lives), `--max-writes-per-key 8` keeps lists short so corrupted values
+are more likely to surface before keys fill up, and `--concurrency 5` with
+`--rate 1000` maximizes contention.
+
+Expected output (on DuckDB < 1.5.2):
+
+```
+Assert failed: No transaction wrote 218 31
+:valid? :unknown
+```
+
+The assertion means Elle found a value in a list that no committed
+transaction ever appended — a symptom of the corrupted string dictionary.
+DuckDB typically crashes shortly after (visible as `:conn-refused` errors).
 
 ## Background
 
