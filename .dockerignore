@@ -1,0 +1,5 @@
+store/
+target/
+local-node/target/
+local-node/local-node.jar
+.git/

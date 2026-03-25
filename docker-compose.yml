@@ -1,0 +1,5 @@
+services:
+  jepsen:
+    build: .
+    volumes:
+      - ./store:/app/store
